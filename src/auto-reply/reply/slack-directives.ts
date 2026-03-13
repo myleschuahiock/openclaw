@@ -3,8 +3,12 @@ import type { ReplyPayload } from "../types.js";
 
 const SLACK_REPLY_BUTTON_ACTION_ID = "openclaw:reply_button";
 const SLACK_REPLY_SELECT_ACTION_ID = "openclaw:reply_select";
+const SLACK_MAX_BLOCKS = 50;
 const SLACK_BUTTON_MAX_ITEMS = 5;
 const SLACK_SELECT_MAX_ITEMS = 100;
+const SLACK_SECTION_TEXT_MAX = 3000;
+const SLACK_PLAIN_TEXT_MAX = 75;
+const SLACK_OPTION_VALUE_MAX = 75;
 const SLACK_DIRECTIVE_RE = /\[\[(slack_buttons|slack_select):\s*([^\]]+)\]\]/gi;
 
 type SlackBlock = Record<string, unknown>;
@@ -16,6 +20,17 @@ type SlackChoice = {
   label: string;
   value: string;
 };
+
+function truncateSlackText(value: string, max: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= max) {
+    return trimmed;
+  }
+  if (max <= 1) {
+    return trimmed.slice(0, max);
+  }
+  return `${trimmed.slice(0, max - 1)}…`;
+}
 
 function parseChoice(raw: string): SlackChoice | null {
   const trimmed = raw.trim();
@@ -54,7 +69,7 @@ function buildSectionBlock(text: string): SlackBlock | null {
     type: "section",
     text: {
       type: "mrkdwn",
-      text: trimmed,
+      text: truncateSlackText(trimmed, SLACK_SECTION_TEXT_MAX),
     },
   };
 }
@@ -72,10 +87,10 @@ function buildButtonsBlock(raw: string, index: number): SlackBlock | null {
       action_id: SLACK_REPLY_BUTTON_ACTION_ID,
       text: {
         type: "plain_text",
-        text: choice.label,
+        text: truncateSlackText(choice.label, SLACK_PLAIN_TEXT_MAX),
         emoji: true,
       },
-      value: choice.value,
+      value: truncateSlackText(choice.value, SLACK_OPTION_VALUE_MAX),
     })),
   };
 }
@@ -103,16 +118,16 @@ function buildSelectBlock(raw: string, index: number): SlackBlock | null {
         action_id: SLACK_REPLY_SELECT_ACTION_ID,
         placeholder: {
           type: "plain_text",
-          text: placeholder,
+          text: truncateSlackText(placeholder, SLACK_PLAIN_TEXT_MAX),
           emoji: true,
         },
         options: choices.map((choice) => ({
           text: {
             type: "plain_text",
-            text: choice.label,
+            text: truncateSlackText(choice.label, SLACK_PLAIN_TEXT_MAX),
             emoji: true,
           },
-          value: choice.value,
+          value: truncateSlackText(choice.value, SLACK_OPTION_VALUE_MAX),
         })),
       },
     ],
@@ -181,6 +196,9 @@ export function parseSlackDirectives(payload: ReplyPayload): ReplyPayload {
   }
 
   const existingBlocks = readExistingSlackBlocks(payload);
+  if (existingBlocks.length + generatedBlocks.length > SLACK_MAX_BLOCKS) {
+    return payload;
+  }
   const nextBlocks = [...existingBlocks, ...generatedBlocks];
 
   return {

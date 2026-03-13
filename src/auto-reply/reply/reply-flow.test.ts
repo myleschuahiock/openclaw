@@ -782,6 +782,82 @@ describe("parseSlackDirectives", () => {
       },
     ]);
   });
+
+  it("truncates Slack interactive reply strings to safe Block Kit limits", () => {
+    const long = "x".repeat(120);
+    const result = parseSlackDirectives({
+      text: `${"y".repeat(3100)} [[slack_select: ${long} | ${long}:${long}]] [[slack_buttons: ${long}:${long}]]`,
+    });
+
+    const blocks = getSlackData(result).blocks as Array<Record<string, unknown>>;
+    expect(blocks).toHaveLength(3);
+    expect(((blocks[0]?.text as { text?: string })?.text ?? "").length).toBeLessThanOrEqual(3000);
+    expect(
+      (
+        (
+          (blocks[1]?.elements as Array<Record<string, unknown>>)?.[0]?.placeholder as {
+            text?: string;
+          }
+        )?.text ?? ""
+      ).length,
+    ).toBeLessThanOrEqual(75);
+    expect(
+      (
+        (
+          (
+            (blocks[1]?.elements as Array<Record<string, unknown>>)?.[0]?.options as Array<
+              Record<string, unknown>
+            >
+          )?.[0]?.text as { text?: string }
+        )?.text ?? ""
+      ).length,
+    ).toBeLessThanOrEqual(75);
+    expect(
+      (
+        ((
+          (blocks[1]?.elements as Array<Record<string, unknown>>)?.[0]?.options as Array<
+            Record<string, unknown>
+          >
+        )?.[0]?.value as string | undefined) ?? ""
+      ).length,
+    ).toBeLessThanOrEqual(75);
+    expect(
+      (
+        (
+          (blocks[2]?.elements as Array<Record<string, unknown>>)?.[0]?.text as {
+            text?: string;
+          }
+        )?.text ?? ""
+      ).length,
+    ).toBeLessThanOrEqual(75);
+    expect(
+      (
+        ((blocks[2]?.elements as Array<Record<string, unknown>>)?.[0]?.value as
+          | string
+          | undefined) ?? ""
+      ).length,
+    ).toBeLessThanOrEqual(75);
+  });
+
+  it("falls back to the original payload when generated blocks would exceed Slack limits", () => {
+    const result = parseSlackDirectives({
+      text: "Choose [[slack_buttons: Retry:retry]]",
+      channelData: {
+        slack: {
+          blocks: Array.from({ length: 49 }, () => ({ type: "divider" })),
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      text: "Choose [[slack_buttons: Retry:retry]]",
+      channelData: {
+        slack: {
+          blocks: Array.from({ length: 49 }, () => ({ type: "divider" })),
+        },
+      },
+    });
+  });
 });
 
 function createDeferred<T>() {

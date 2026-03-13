@@ -109,9 +109,17 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       ? [normalized.mediaUrl]
       : [];
   const replyToId = normalized.replyToId;
+  const hasSlackBlocks =
+    channel === "slack" &&
+    Boolean(
+      normalized.channelData?.slack &&
+      typeof normalized.channelData.slack === "object" &&
+      !Array.isArray(normalized.channelData.slack) &&
+      (normalized.channelData.slack as { blocks?: unknown }).blocks,
+    );
 
   // Skip empty replies.
-  if (!text.trim() && mediaUrls.length === 0) {
+  if (!text.trim() && mediaUrls.length === 0 && !hasSlackBlocks) {
     return { ok: true };
   }
 
