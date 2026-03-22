@@ -369,7 +369,6 @@ export async function gatherDaemonStatus(
             : undefined,
         timeoutMs,
         json: opts.rpc.json,
-        configPath: daemonConfigSummary.path,
       })
     : undefined;
   if (rpc?.ok) {

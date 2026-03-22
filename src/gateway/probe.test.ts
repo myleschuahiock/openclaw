@@ -160,4 +160,16 @@ describe("probeGateway", () => {
     expect(result.status).toBeNull();
     expect(result.configSnapshot).toBeNull();
   });
+
+  it("passes through tls fingerprints for secure daemon probes", async () => {
+    await probeGateway({
+      url: "wss://gateway.example/ws",
+      auth: { token: "secret" },
+      tlsFingerprint: "sha256:abc",
+      timeoutMs: 1_000,
+      includeDetails: false,
+    });
+
+    expect(gatewayClientState.options?.tlsFingerprint).toBe("sha256:abc");
+  });
 });

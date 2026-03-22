@@ -7,7 +7,6 @@ import {
   renderProbeSummaryLine,
   resolveProbeBudgetMs,
   resolveAuthForTarget,
-  resolveProbeBudgetMs,
 } from "./helpers.js";
 
 describe("extractConfigSummary", () => {
