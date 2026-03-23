@@ -21,6 +21,7 @@ describe("CronService restart catch-up", () => {
     storePath: string;
     enqueueSystemEvent: ReturnType<typeof vi.fn>;
     requestHeartbeatNow: ReturnType<typeof vi.fn>;
+    runIsolatedAgentJob?: ReturnType<typeof vi.fn>;
   }) {
     return new CronService({
       storePath: params.storePath,
@@ -28,7 +29,8 @@ describe("CronService restart catch-up", () => {
       log: noopLogger,
       enqueueSystemEvent: params.enqueueSystemEvent as never,
       requestHeartbeatNow: params.requestHeartbeatNow as never,
-      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })) as never,
+      runIsolatedAgentJob: (params.runIsolatedAgentJob ??
+        vi.fn(async () => ({ status: "ok" as const }))) as never,
     });
   }
 
@@ -96,6 +98,57 @@ describe("CronService restart catch-up", () => {
 
     cron.stop();
     await store.cleanup();
+  });
+
+  it("preserves workflow delivery truth for overdue isolated jobs replayed on start", async () => {
+    const store = await makeStorePath();
+    const enqueueSystemEvent = vi.fn();
+    const requestHeartbeatNow = vi.fn();
+
+    await writeStoreJobs(store.storePath, [
+      {
+        id: "restart-overdue-isolated",
+        name: "isolated catch-up",
+        enabled: true,
+        createdAtMs: Date.parse("2025-12-10T12:00:00.000Z"),
+        updatedAtMs: Date.parse("2025-12-12T15:00:00.000Z"),
+        schedule: { kind: "cron", expr: "0 15 * * *", tz: "UTC" },
+        sessionTarget: "isolated",
+        wakeMode: "next-heartbeat",
+        payload: { kind: "agentTurn", message: "run catch-up" },
+        delivery: { mode: "none" },
+        state: {
+          nextRunAtMs: Date.parse("2025-12-13T15:00:00.000Z"),
+          lastRunAtMs: Date.parse("2025-12-12T15:00:00.000Z"),
+          lastStatus: "ok",
+        },
+      },
+    ]);
+
+    const cron = createRestartCronService({
+      storePath: store.storePath,
+      enqueueSystemEvent,
+      requestHeartbeatNow,
+      runIsolatedAgentJob: vi.fn(async () => ({
+        status: "ok" as const,
+        delivered: false,
+        summary: ["Email: sent", "Telegram: sent"].join("\n"),
+      })),
+    });
+
+    await cron.start();
+    try {
+      const jobs = await cron.list({ includeDisabled: true });
+      const updated = jobs.find((job) => job.id === "restart-overdue-isolated");
+      expect(updated?.state.lastStatus).toBe("ok");
+      expect(updated?.state.lastDelivered).toBe(true);
+      expect(updated?.state.lastDeliveryStatus).toBe("delivered");
+      expect(updated?.state.lastWorkflowDelivered).toBe(true);
+      expect(updated?.state.lastWorkflowDeliveryStatus).toBe("email_then_telegram");
+    } finally {
+      cron.stop();
+      await store.cleanup();
+    }
   });
 
   it("clears stale running markers without replaying interrupted startup jobs", async () => {

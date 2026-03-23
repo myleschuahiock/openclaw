@@ -217,6 +217,67 @@ describe("CronService persists delivered status", () => {
     expect(capturedEvent?.deliveryStatus).toBe("delivered");
   });
 
+  it("uses workflow delivery truth when the runner summary reports delivery success", async () => {
+    const store = await makeStorePath();
+    let capturedEvent:
+      | {
+          status?: string;
+          delivered?: boolean;
+          deliveryStatus?: string;
+          workflowDelivered?: boolean;
+          workflowDeliveryStatus?: string;
+        }
+      | undefined;
+    const cron = new CronService({
+      storePath: store.storePath,
+      cronEnabled: true,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeatNow: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({
+        status: "ok" as const,
+        delivered: false,
+        summary: ["Email: sent", "Telegram: sent"].join("\n"),
+      })),
+      onEvent: (evt) => {
+        if (evt.action === "finished") {
+          capturedEvent = {
+            status: evt.status,
+            delivered: evt.delivered,
+            deliveryStatus: evt.deliveryStatus,
+            workflowDelivered: evt.workflowDelivered,
+            workflowDeliveryStatus: evt.workflowDeliveryStatus,
+          };
+        }
+      },
+    });
+
+    await cron.start();
+    try {
+      const job = await cron.add(buildIsolatedAgentTurnJob("workflow-delivery-success"));
+      vi.setSystemTime(new Date(job.state.nextRunAtMs! + 5));
+      await vi.runOnlyPendingTimersAsync();
+
+      await vi.waitFor(() => expect(capturedEvent?.status).toBe("ok"));
+
+      const updated = (await cron.list({ includeDisabled: true })).find(
+        (entry) => entry.id === job.id,
+      );
+      expect(updated?.state.lastStatus).toBe("ok");
+      expect(updated?.state.lastRunStatus).toBe("ok");
+      expect(updated?.state.lastDelivered).toBe(true);
+      expect(updated?.state.lastDeliveryStatus).toBe("delivered");
+      expect(updated?.state.lastWorkflowDelivered).toBe(true);
+      expect(updated?.state.lastWorkflowDeliveryStatus).toBe("email_then_telegram");
+      expect(capturedEvent?.delivered).toBe(true);
+      expect(capturedEvent?.deliveryStatus).toBe("delivered");
+      expect(capturedEvent?.workflowDelivered).toBe(true);
+      expect(capturedEvent?.workflowDeliveryStatus).toBe("email_then_telegram");
+    } finally {
+      cron.stop();
+    }
+  });
+
   it("persists workflow failure metadata when the runner reports an ok status with a failed summary", async () => {
     const store = await makeStorePath();
     let capturedEvent:

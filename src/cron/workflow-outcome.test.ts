@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
+import type { CronRunOutcome } from "./types.js";
 import { normalizeCronRunOutcome } from "./workflow-outcome.js";
+
+function normalizeOutcome(result: CronRunOutcome & { delivered?: boolean }) {
+  return normalizeCronRunOutcome(result);
+}
 
 describe("normalizeCronRunOutcome", () => {
   it("promotes failed workflow summaries to cron errors and extracts metadata", () => {
-    const result = normalizeCronRunOutcome({
+    const result = normalizeOutcome({
       status: "ok" as const,
       delivered: false,
       summary: [
@@ -27,7 +32,7 @@ describe("normalizeCronRunOutcome", () => {
   });
 
   it("treats JSON auth failures as workflow errors", () => {
-    const result = normalizeCronRunOutcome({
+    const result = normalizeOutcome({
       status: "ok" as const,
       summary:
         '{"detail":{"code":"token_expired","message":"Provided authentication token is expired. Please try signing in again."}}',
@@ -40,7 +45,7 @@ describe("normalizeCronRunOutcome", () => {
   });
 
   it("captures termination signals from interruption summaries", () => {
-    const result = normalizeCronRunOutcome({
+    const result = normalizeOutcome({
       status: "ok" as const,
       summary: [
         "Run failed before completion.",
@@ -56,7 +61,7 @@ describe("normalizeCronRunOutcome", () => {
   });
 
   it("does not fail a run solely because a failure code is mentioned in normal text", () => {
-    const result = normalizeCronRunOutcome({
+    const result = normalizeOutcome({
       status: "ok" as const,
       summary:
         "Reference note: `MAIL_APP_TIMEOUT` is the code to watch for in tomorrow's validation.",
@@ -67,8 +72,21 @@ describe("normalizeCronRunOutcome", () => {
     expect(result.workflowFailureCode).toBe("MAIL_APP_TIMEOUT");
   });
 
+  it("uses workflow delivery truth when the summary shows delivery succeeded", () => {
+    const result = normalizeOutcome({
+      status: "ok" as const,
+      delivered: false,
+      summary: ["Email: sent", "Telegram: sent"].join("\n"),
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.workflowStatus).toBe("success");
+    expect(result.workflowDelivered).toBe(true);
+    expect(result.workflowDeliveryStatus).toBe("email_then_telegram");
+  });
+
   it("leaves successful summaries untouched", () => {
-    const result = normalizeCronRunOutcome({
+    const result = normalizeOutcome({
       status: "ok" as const,
       summary: "Run completed successfully.",
     });

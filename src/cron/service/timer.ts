@@ -173,6 +173,19 @@ function resolveDeliveryStatus(params: { job: CronJob; delivered?: boolean }): C
   return resolveCronDeliveryPlan(params.job).requested ? "unknown" : "not-requested";
 }
 
+function resolveEffectiveDelivered(params: {
+  delivered?: boolean;
+  workflowDelivered?: boolean;
+}): boolean | undefined {
+  if (typeof params.workflowDelivered === "boolean") {
+    return params.workflowDelivered;
+  }
+  if (typeof params.delivered === "boolean") {
+    return params.delivered;
+  }
+  return undefined;
+}
+
 function normalizeCronMessageChannel(input: unknown): CronMessageChannel | undefined {
   if (typeof input !== "string") {
     return undefined;
@@ -332,7 +345,11 @@ export function applyJobResult(
   job.state.lastStatus = result.status;
   job.state.lastDurationMs = Math.max(0, result.endedAt - result.startedAt);
   job.state.lastError = result.error;
-  job.state.lastDelivered = result.delivered;
+  const effectiveDelivered = resolveEffectiveDelivered({
+    delivered: result.delivered,
+    workflowDelivered: result.workflowDelivered,
+  });
+  job.state.lastDelivered = effectiveDelivered;
   job.state.lastWorkflowStatus = result.workflowStatus;
   job.state.lastWorkflowFailureCode = result.workflowFailureCode;
   job.state.lastWorkflowFailureCodes = result.workflowFailureCodes;
@@ -340,7 +357,7 @@ export function applyJobResult(
   job.state.lastWorkflowTerminationSignal = result.workflowTerminationSignal;
   job.state.lastWorkflowDelivered = result.workflowDelivered;
   job.state.lastWorkflowDeliveryStatus = result.workflowDeliveryStatus;
-  const deliveryStatus = resolveDeliveryStatus({ job, delivered: result.delivered });
+  const deliveryStatus = resolveDeliveryStatus({ job, delivered: effectiveDelivered });
   job.state.lastDeliveryStatus = deliveryStatus;
   job.state.lastDeliveryError =
     deliveryStatus === "not-delivered" && result.error ? result.error : undefined;
@@ -955,6 +972,13 @@ async function runStartupCatchupCandidate(
       error: result.error,
       summary: result.summary,
       delivered: result.delivered,
+      workflowStatus: result.workflowStatus,
+      workflowFailureCode: result.workflowFailureCode,
+      workflowFailureCodes: result.workflowFailureCodes,
+      workflowExitCode: result.workflowExitCode,
+      workflowTerminationSignal: result.workflowTerminationSignal,
+      workflowDelivered: result.workflowDelivered,
+      workflowDeliveryStatus: result.workflowDeliveryStatus,
       sessionId: result.sessionId,
       sessionKey: result.sessionKey,
       model: result.model,
@@ -1284,7 +1308,7 @@ function emitJobFinished(
     status: result.status,
     error: result.error,
     summary: result.summary,
-    delivered: result.delivered,
+    delivered: job.state.lastDelivered,
     deliveryStatus: job.state.lastDeliveryStatus,
     deliveryError: job.state.lastDeliveryError,
     workflowStatus: result.workflowStatus,

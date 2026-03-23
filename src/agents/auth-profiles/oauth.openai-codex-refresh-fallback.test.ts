@@ -1,8 +1,14 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { OAuthCredentials } from "@mariozechner/pi-ai/oauth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { captureEnv } from "../../test-utils/env.js";
+import type {
+  CodexCliCredential,
+  MiniMaxCliCredential,
+  QwenCliCredential,
+} from "../cli-credentials.js";
 import { resolveApiKeyForProfile } from "./oauth.js";
 import {
   clearRuntimeAuthProfileStoreSnapshots,
@@ -11,8 +17,15 @@ import {
 } from "./store.js";
 import type { AuthProfileStore } from "./types.js";
 
+type RefreshedOAuthApiKey = {
+  apiKey: string;
+  newCredentials: OAuthCredentials;
+};
+
 const { getOAuthApiKeyMock } = vi.hoisted(() => ({
-  getOAuthApiKeyMock: vi.fn(async () => {
+  getOAuthApiKeyMock: vi.fn<
+    (provider: string, credentials: OAuthCredentials) => Promise<RefreshedOAuthApiKey>
+  >(async () => {
     throw new Error("Failed to extract accountId from token");
   }),
 }));
@@ -21,9 +34,9 @@ const {
   readQwenCliCredentialsCachedMock,
   readMiniMaxCliCredentialsCachedMock,
 } = vi.hoisted(() => ({
-  readCodexCliCredentialsCachedMock: vi.fn(() => null),
-  readQwenCliCredentialsCachedMock: vi.fn(() => null),
-  readMiniMaxCliCredentialsCachedMock: vi.fn(() => null),
+  readCodexCliCredentialsCachedMock: vi.fn<() => CodexCliCredential | null>(() => null),
+  readQwenCliCredentialsCachedMock: vi.fn<() => QwenCliCredential | null>(() => null),
+  readMiniMaxCliCredentialsCachedMock: vi.fn<() => MiniMaxCliCredential | null>(() => null),
 }));
 
 vi.mock("@mariozechner/pi-ai/oauth", async () => {
