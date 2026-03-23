@@ -6,6 +6,7 @@ import { withFileLock } from "../../infra/file-lock.js";
 import { refreshQwenPortalCredentials } from "../../providers/qwen-portal-oauth.js";
 import { resolveSecretRefString, type SecretRefResolveCache } from "../../secrets/resolve.js";
 import { refreshChutesTokens } from "../chutes-oauth.js";
+import { readCodexCliCredentialsCached } from "../cli-credentials.js";
 import { normalizeProviderId } from "../model-selection.js";
 import { AUTH_STORE_LOCK_OPTIONS, log } from "./constants.js";
 import { resolveTokenExpiryState } from "./credential-state.js";
@@ -88,6 +89,38 @@ function extractErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+type StoredOAuthProfileCredential = OAuthCredentials & {
+  type: "oauth";
+  provider: string;
+  email?: string;
+};
+
+function sameStoredOAuthCredential(
+  left: StoredOAuthProfileCredential | undefined,
+  right: StoredOAuthProfileCredential | undefined,
+): boolean {
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.provider === right.provider &&
+    left.access === right.access &&
+    left.refresh === right.refresh &&
+    left.expires === right.expires &&
+    left.email === right.email &&
+    left.enterpriseUrl === right.enterpriseUrl &&
+    left.projectId === right.projectId &&
+    left.accountId === right.accountId
+  );
+}
+
+function isOpenaiCodexRefreshTokenReused(params: { provider: string; error: unknown }): boolean {
+  if (normalizeProviderId(params.provider) !== "openai-codex") {
+    return false;
+  }
+  return /refresh_token_reused/i.test(extractErrorMessage(params.error));
+}
+
 function shouldUseOpenaiCodexRefreshFallback(params: {
   provider: string;
   credentials: OAuthCredentials;
@@ -118,8 +151,8 @@ function adoptNewerMainOAuthCredential(params: {
   store: AuthProfileStore;
   profileId: string;
   agentDir?: string;
-  cred: OAuthCredentials & { type: "oauth"; provider: string; email?: string };
-}): (OAuthCredentials & { type: "oauth"; provider: string; email?: string }) | null {
+  cred: StoredOAuthProfileCredential;
+}): StoredOAuthProfileCredential | null {
   if (!params.agentDir) {
     return null;
   }
@@ -151,16 +184,154 @@ function adoptNewerMainOAuthCredential(params: {
   return null;
 }
 
+function adoptRecoveredOpenaiCodexCredential(params: {
+  store: AuthProfileStore;
+  profileId: string;
+  agentDir?: string;
+  current: StoredOAuthProfileCredential;
+  candidate: StoredOAuthProfileCredential | null;
+  source: "codex_cli" | "main_agent";
+}): StoredOAuthProfileCredential | null {
+  const candidate = params.candidate;
+  if (!candidate || candidate.provider !== params.current.provider) {
+    return null;
+  }
+  const next: StoredOAuthProfileCredential = {
+    ...params.current,
+    ...candidate,
+    type: "oauth",
+    provider: candidate.provider,
+    email: candidate.email ?? params.current.email,
+  };
+  const existing = params.store.profiles[params.profileId];
+  const existingOAuth = existing?.type === "oauth" ? existing : undefined;
+  if (sameStoredOAuthCredential(existingOAuth, next)) {
+    return existingOAuth ?? next;
+  }
+  params.store.profiles[params.profileId] = next;
+  saveAuthProfileStore(params.store, params.agentDir);
+  log.info("recovered openai-codex OAuth credentials after refresh_token_reused", {
+    profileId: params.profileId,
+    agentDir: params.agentDir,
+    source: params.source,
+    expires: new Date(next.expires).toISOString(),
+  });
+  return next;
+}
+
+async function tryRecoverOpenaiCodexRefreshTokenReuse(params: {
+  store: AuthProfileStore;
+  profileId: string;
+  agentDir?: string;
+  cred: StoredOAuthProfileCredential;
+  error: unknown;
+}): Promise<{ apiKey: string; provider: string; email?: string } | null> {
+  if (!isOpenaiCodexRefreshTokenReused({ provider: params.cred.provider, error: params.error })) {
+    return null;
+  }
+
+  const codexCliCred = readCodexCliCredentialsCached({ ttlMs: 0 });
+  if (codexCliCred && codexCliCred.provider === params.cred.provider) {
+    adoptRecoveredOpenaiCodexCredential({
+      store: params.store,
+      profileId: params.profileId,
+      agentDir: params.agentDir,
+      current: params.cred,
+      candidate: {
+        ...params.cred,
+        ...codexCliCred,
+        type: "oauth",
+        provider: codexCliCred.provider,
+        email: params.cred.email,
+      },
+      source: "codex_cli",
+    });
+  }
+
+  try {
+    const mainStore = ensureAuthProfileStore(undefined);
+    const mainCred = mainStore.profiles[params.profileId];
+    if (mainCred?.type === "oauth" && mainCred.provider === params.cred.provider) {
+      adoptRecoveredOpenaiCodexCredential({
+        store: params.store,
+        profileId: params.profileId,
+        agentDir: params.agentDir,
+        current: params.cred,
+        candidate: {
+          ...params.cred,
+          ...mainCred,
+          type: "oauth",
+          provider: mainCred.provider,
+          email: mainCred.email ?? params.cred.email,
+        },
+        source: "main_agent",
+      });
+    }
+  } catch (err) {
+    log.debug("openai-codex refresh_token_reused main-agent recovery lookup failed", {
+      profileId: params.profileId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const recovered = params.store.profiles[params.profileId];
+  if (recovered?.type !== "oauth") {
+    return null;
+  }
+  if (Date.now() < recovered.expires) {
+    return buildOAuthProfileResult({
+      provider: recovered.provider,
+      credentials: recovered,
+      email: recovered.email,
+    });
+  }
+  if (sameStoredOAuthCredential(recovered, params.cred)) {
+    return null;
+  }
+
+  try {
+    const retried = await refreshOAuthTokenWithLock({
+      profileId: params.profileId,
+      agentDir: params.agentDir,
+      recoveredCredential: recovered,
+    });
+    if (!retried) {
+      return null;
+    }
+    return buildApiKeyProfileResult({
+      apiKey: retried.apiKey,
+      provider: recovered.provider,
+      email: recovered.email,
+    });
+  } catch (retryError) {
+    log.warn("openai-codex oauth retry after refresh_token_reused recovery failed", {
+      profileId: params.profileId,
+      agentDir: params.agentDir,
+      error: extractErrorMessage(retryError),
+    });
+    return null;
+  }
+}
+
 async function refreshOAuthTokenWithLock(params: {
   profileId: string;
   agentDir?: string;
+  recoveredCredential?: StoredOAuthProfileCredential;
 }): Promise<{ apiKey: string; newCredentials: OAuthCredentials } | null> {
   const authPath = resolveAuthStorePath(params.agentDir);
   ensureAuthStoreFile(authPath);
 
   return await withFileLock(authPath, AUTH_STORE_LOCK_OPTIONS, async () => {
     const store = ensureAuthProfileStore(params.agentDir);
-    const cred = store.profiles[params.profileId];
+    let cred = store.profiles[params.profileId];
+    if (params.recoveredCredential) {
+      const existingOAuth = cred?.type === "oauth" ? cred : undefined;
+      if (!sameStoredOAuthCredential(existingOAuth, params.recoveredCredential)) {
+        store.profiles[params.profileId] = { ...params.recoveredCredential };
+        cred = store.profiles[params.profileId];
+        saveAuthProfileStore(store, params.agentDir);
+      }
+    }
     if (!cred || cred.type !== "oauth") {
       return null;
     }
@@ -404,6 +575,16 @@ export async function resolveApiKeyForProfile(
         credentials: refreshed,
         email: refreshed.email ?? cred.email,
       });
+    }
+    const refreshTokenRecovered = await tryRecoverOpenaiCodexRefreshTokenReuse({
+      store: refreshedStore,
+      profileId,
+      agentDir: params.agentDir,
+      cred,
+      error,
+    });
+    if (refreshTokenRecovered) {
+      return refreshTokenRecovered;
     }
     const fallbackProfileId = suggestOAuthProfileIdForLegacyDefault({
       cfg,

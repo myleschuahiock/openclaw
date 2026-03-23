@@ -23,6 +23,13 @@ export type CronEvent = {
   delivered?: boolean;
   deliveryStatus?: CronDeliveryStatus;
   deliveryError?: string;
+  workflowStatus?: "success" | "failed" | "unknown";
+  workflowFailureCode?: string;
+  workflowFailureCodes?: string[];
+  workflowExitCode?: number;
+  workflowTerminationSignal?: string;
+  workflowDelivered?: boolean;
+  workflowDeliveryStatus?: string;
   sessionId?: string;
   sessionKey?: string;
   nextRunAtMs?: number;

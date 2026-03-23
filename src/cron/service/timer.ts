@@ -13,6 +13,7 @@ import type {
   CronRunStatus,
   CronRunTelemetry,
 } from "../types.js";
+import { normalizeCronRunOutcome } from "../workflow-outcome.js";
 import {
   computeJobPreviousRunAtMs,
   computeJobNextRunAtMs,
@@ -300,6 +301,13 @@ export function applyJobResult(
     status: CronRunStatus;
     error?: string;
     delivered?: boolean;
+    workflowStatus?: "success" | "failed" | "unknown";
+    workflowFailureCode?: string;
+    workflowFailureCodes?: string[];
+    workflowExitCode?: number;
+    workflowTerminationSignal?: string;
+    workflowDelivered?: boolean;
+    workflowDeliveryStatus?: string;
     startedAt: number;
     endedAt: number;
   },
@@ -325,6 +333,13 @@ export function applyJobResult(
   job.state.lastDurationMs = Math.max(0, result.endedAt - result.startedAt);
   job.state.lastError = result.error;
   job.state.lastDelivered = result.delivered;
+  job.state.lastWorkflowStatus = result.workflowStatus;
+  job.state.lastWorkflowFailureCode = result.workflowFailureCode;
+  job.state.lastWorkflowFailureCodes = result.workflowFailureCodes;
+  job.state.lastWorkflowExitCode = result.workflowExitCode;
+  job.state.lastWorkflowTerminationSignal = result.workflowTerminationSignal;
+  job.state.lastWorkflowDelivered = result.workflowDelivered;
+  job.state.lastWorkflowDeliveryStatus = result.workflowDeliveryStatus;
   const deliveryStatus = resolveDeliveryStatus({ job, delivered: result.delivered });
   job.state.lastDeliveryStatus = deliveryStatus;
   job.state.lastDeliveryError =
@@ -489,6 +504,13 @@ function applyOutcomeToStoredJob(state: CronServiceState, result: TimedCronRunOu
     status: result.status,
     error: result.error,
     delivered: result.delivered,
+    workflowStatus: result.workflowStatus,
+    workflowFailureCode: result.workflowFailureCode,
+    workflowFailureCodes: result.workflowFailureCodes,
+    workflowExitCode: result.workflowExitCode,
+    workflowTerminationSignal: result.workflowTerminationSignal,
+    workflowDelivered: result.workflowDelivered,
+    workflowDeliveryStatus: result.workflowDeliveryStatus,
     startedAt: result.startedAt,
     endedAt: result.endedAt,
   });
@@ -637,13 +659,13 @@ export async function onTimer(state: CronServiceState) {
           { jobId: id, jobName: job.name, timeoutMs: jobTimeoutMs ?? null },
           `cron: job failed: ${errorText}`,
         );
-        return {
+        return normalizeCronRunOutcome({
           jobId: id,
           status: "error",
           error: errorText,
           startedAt,
           endedAt: state.deps.nowMs(),
-        };
+        });
       }
     };
 
@@ -942,13 +964,13 @@ async function runStartupCatchupCandidate(
       endedAt: state.deps.nowMs(),
     };
   } catch (err) {
-    return {
+    return normalizeCronRunOutcome({
       jobId: candidate.jobId,
       status: "error",
       error: String(err),
       startedAt,
       endedAt: state.deps.nowMs(),
-    };
+    });
   }
 }
 
@@ -1007,10 +1029,11 @@ export async function executeJobCore(
 ): Promise<
   CronRunOutcome & CronRunTelemetry & { delivered?: boolean; deliveryAttempted?: boolean }
 > {
-  const resolveAbortError = () => ({
-    status: "error" as const,
-    error: timeoutErrorMessage(),
-  });
+  const resolveAbortError = () =>
+    normalizeCronRunOutcome({
+      status: "error" as const,
+      error: timeoutErrorMessage(),
+    });
   const waitWithAbort = async (ms: number) => {
     if (!abortSignal) {
       await new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -1178,7 +1201,7 @@ export async function executeJobCore(
     }
   }
 
-  return {
+  return normalizeCronRunOutcome({
     status: res.status,
     error: res.error,
     summary: res.summary,
@@ -1189,7 +1212,7 @@ export async function executeJobCore(
     model: res.model,
     provider: res.provider,
     usage: res.usage,
-  };
+  });
 }
 
 /**
@@ -1218,7 +1241,7 @@ export async function executeJob(
   try {
     coreResult = await executeJobCore(state, job);
   } catch (err) {
-    coreResult = { status: "error", error: String(err) };
+    coreResult = normalizeCronRunOutcome({ status: "error", error: String(err) });
   }
 
   const endedAt = state.deps.nowMs();
@@ -1226,6 +1249,13 @@ export async function executeJob(
     status: coreResult.status,
     error: coreResult.error,
     delivered: coreResult.delivered,
+    workflowStatus: coreResult.workflowStatus,
+    workflowFailureCode: coreResult.workflowFailureCode,
+    workflowFailureCodes: coreResult.workflowFailureCodes,
+    workflowExitCode: coreResult.workflowExitCode,
+    workflowTerminationSignal: coreResult.workflowTerminationSignal,
+    workflowDelivered: coreResult.workflowDelivered,
+    workflowDeliveryStatus: coreResult.workflowDeliveryStatus,
     startedAt,
     endedAt,
   });
@@ -1257,6 +1287,13 @@ function emitJobFinished(
     delivered: result.delivered,
     deliveryStatus: job.state.lastDeliveryStatus,
     deliveryError: job.state.lastDeliveryError,
+    workflowStatus: result.workflowStatus,
+    workflowFailureCode: result.workflowFailureCode,
+    workflowFailureCodes: result.workflowFailureCodes,
+    workflowExitCode: result.workflowExitCode,
+    workflowTerminationSignal: result.workflowTerminationSignal,
+    workflowDelivered: result.workflowDelivered,
+    workflowDeliveryStatus: result.workflowDeliveryStatus,
     sessionId: result.sessionId,
     sessionKey: result.sessionKey,
     runAtMs,

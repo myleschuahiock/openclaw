@@ -216,4 +216,73 @@ describe("CronService persists delivered status", () => {
     expect(capturedEvent?.delivered).toBe(true);
     expect(capturedEvent?.deliveryStatus).toBe("delivered");
   });
+
+  it("persists workflow failure metadata when the runner reports an ok status with a failed summary", async () => {
+    const store = await makeStorePath();
+    let capturedEvent:
+      | {
+          status?: string;
+          workflowStatus?: string;
+          workflowFailureCode?: string;
+          workflowExitCode?: number;
+          workflowDeliveryStatus?: string;
+        }
+      | undefined;
+    const cron = new CronService({
+      storePath: store.storePath,
+      cronEnabled: true,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeatNow: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({
+        status: "ok" as const,
+        delivered: false,
+        summary: [
+          "Run completed, but failed success criteria due to email preflight failure.",
+          "",
+          "Final status: exit code 1",
+          "Failure code: `MAIL_APP_TIMEOUT` (`OSASCRIPT_TIMEOUT` after 90 seconds)",
+          "Email: not sent",
+          "Telegram: sent",
+        ].join("\n"),
+      })),
+      onEvent: (evt) => {
+        if (evt.action === "finished") {
+          capturedEvent = {
+            status: evt.status,
+            workflowStatus: evt.workflowStatus,
+            workflowFailureCode: evt.workflowFailureCode,
+            workflowExitCode: evt.workflowExitCode,
+            workflowDeliveryStatus: evt.workflowDeliveryStatus,
+          };
+        }
+      },
+    });
+
+    await cron.start();
+    try {
+      const job = await cron.add(buildIsolatedAgentTurnJob("workflow-summary-failure"));
+      vi.setSystemTime(new Date(job.state.nextRunAtMs! + 5));
+      await vi.runOnlyPendingTimersAsync();
+
+      await vi.waitFor(() => expect(capturedEvent?.status).toBe("error"));
+
+      const updated = (await cron.list({ includeDisabled: true })).find(
+        (entry) => entry.id === job.id,
+      );
+      expect(updated?.state.lastStatus).toBe("error");
+      expect(updated?.state.lastRunStatus).toBe("error");
+      expect(updated?.state.lastWorkflowStatus).toBe("failed");
+      expect(updated?.state.lastWorkflowFailureCode).toBe("MAIL_APP_TIMEOUT");
+      expect(updated?.state.lastWorkflowExitCode).toBe(1);
+      expect(updated?.state.lastWorkflowDelivered).toBe(false);
+      expect(updated?.state.lastWorkflowDeliveryStatus).toBe("email_failed_telegram_sent");
+      expect(capturedEvent?.workflowStatus).toBe("failed");
+      expect(capturedEvent?.workflowFailureCode).toBe("MAIL_APP_TIMEOUT");
+      expect(capturedEvent?.workflowExitCode).toBe(1);
+      expect(capturedEvent?.workflowDeliveryStatus).toBe("email_failed_telegram_sent");
+    } finally {
+      cron.stop();
+    }
+  });
 });

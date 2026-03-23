@@ -1,6 +1,7 @@
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import type { CronJob, CronJobCreate, CronJobPatch } from "../types.js";
+import { normalizeCronRunOutcome } from "../workflow-outcome.js";
 import { normalizeCronCreateDeliveryInput } from "./initial-delivery.js";
 import {
   applyJobPatch,
@@ -441,7 +442,7 @@ async function finishPreparedManualRun(
   try {
     coreResult = await executeJobCoreWithTimeout(state, executionJob);
   } catch (err) {
-    coreResult = { status: "error", error: String(err) };
+    coreResult = normalizeCronRunOutcome({ status: "error", error: String(err) });
   }
   const endedAt = state.deps.nowMs();
 
@@ -459,6 +460,13 @@ async function finishPreparedManualRun(
         status: coreResult.status,
         error: coreResult.error,
         delivered: coreResult.delivered,
+        workflowStatus: coreResult.workflowStatus,
+        workflowFailureCode: coreResult.workflowFailureCode,
+        workflowFailureCodes: coreResult.workflowFailureCodes,
+        workflowExitCode: coreResult.workflowExitCode,
+        workflowTerminationSignal: coreResult.workflowTerminationSignal,
+        workflowDelivered: coreResult.workflowDelivered,
+        workflowDeliveryStatus: coreResult.workflowDeliveryStatus,
         startedAt,
         endedAt,
       },
@@ -474,6 +482,13 @@ async function finishPreparedManualRun(
       delivered: coreResult.delivered,
       deliveryStatus: job.state.lastDeliveryStatus,
       deliveryError: job.state.lastDeliveryError,
+      workflowStatus: coreResult.workflowStatus,
+      workflowFailureCode: coreResult.workflowFailureCode,
+      workflowFailureCodes: coreResult.workflowFailureCodes,
+      workflowExitCode: coreResult.workflowExitCode,
+      workflowTerminationSignal: coreResult.workflowTerminationSignal,
+      workflowDelivered: coreResult.workflowDelivered,
+      workflowDeliveryStatus: coreResult.workflowDeliveryStatus,
       sessionId: coreResult.sessionId,
       sessionKey: coreResult.sessionKey,
       runAtMs: startedAt,

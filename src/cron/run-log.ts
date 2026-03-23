@@ -14,6 +14,13 @@ export type CronRunLogEntry = {
   delivered?: boolean;
   deliveryStatus?: CronDeliveryStatus;
   deliveryError?: string;
+  workflowStatus?: "success" | "failed" | "unknown";
+  workflowFailureCode?: string;
+  workflowFailureCodes?: string[];
+  workflowExitCode?: number;
+  workflowTerminationSignal?: string;
+  workflowDelivered?: boolean;
+  workflowDeliveryStatus?: string;
   sessionId?: string;
   sessionKey?: string;
   runAtMs?: number;
@@ -311,6 +318,45 @@ function parseAllRunLogEntries(raw: string, opts?: { jobId?: string }): CronRunL
       if (typeof obj.deliveryError === "string") {
         entry.deliveryError = obj.deliveryError;
       }
+      if (
+        obj.workflowStatus === "success" ||
+        obj.workflowStatus === "failed" ||
+        obj.workflowStatus === "unknown"
+      ) {
+        entry.workflowStatus = obj.workflowStatus;
+      }
+      if (
+        typeof obj.workflowFailureCode === "string" &&
+        obj.workflowFailureCode.trim().length > 0
+      ) {
+        entry.workflowFailureCode = obj.workflowFailureCode;
+      }
+      if (Array.isArray(obj.workflowFailureCodes)) {
+        const codes = obj.workflowFailureCodes.filter(
+          (value): value is string => typeof value === "string" && value.trim().length > 0,
+        );
+        if (codes.length > 0) {
+          entry.workflowFailureCodes = codes;
+        }
+      }
+      if (typeof obj.workflowExitCode === "number" && Number.isFinite(obj.workflowExitCode)) {
+        entry.workflowExitCode = obj.workflowExitCode;
+      }
+      if (
+        typeof obj.workflowTerminationSignal === "string" &&
+        obj.workflowTerminationSignal.trim().length > 0
+      ) {
+        entry.workflowTerminationSignal = obj.workflowTerminationSignal;
+      }
+      if (typeof obj.workflowDelivered === "boolean") {
+        entry.workflowDelivered = obj.workflowDelivered;
+      }
+      if (
+        typeof obj.workflowDeliveryStatus === "string" &&
+        obj.workflowDeliveryStatus.trim().length > 0
+      ) {
+        entry.workflowDeliveryStatus = obj.workflowDeliveryStatus;
+      }
       if (typeof obj.sessionId === "string" && obj.sessionId.trim().length > 0) {
         entry.sessionId = obj.sessionId;
       }
@@ -367,7 +413,15 @@ export async function readCronRunLogEntriesPage(
     statuses,
     deliveryStatuses,
     query,
-    queryTextForEntry: (entry) => [entry.summary ?? "", entry.error ?? "", entry.jobId].join(" "),
+    queryTextForEntry: (entry) =>
+      [
+        entry.summary ?? "",
+        entry.error ?? "",
+        entry.jobId,
+        entry.workflowFailureCode ?? "",
+        ...(entry.workflowFailureCodes ?? []),
+        entry.workflowTerminationSignal ?? "",
+      ].join(" "),
   });
   const sorted =
     sortDir === "asc"
@@ -424,7 +478,15 @@ export async function readCronRunLogEntriesPageAll(
     query,
     queryTextForEntry: (entry) => {
       const jobName = opts.jobNameById?.[entry.jobId] ?? "";
-      return [entry.summary ?? "", entry.error ?? "", entry.jobId, jobName].join(" ");
+      return [
+        entry.summary ?? "",
+        entry.error ?? "",
+        entry.jobId,
+        jobName,
+        entry.workflowFailureCode ?? "",
+        ...(entry.workflowFailureCodes ?? []),
+        entry.workflowTerminationSignal ?? "",
+      ].join(" ");
     },
   });
   const sorted =

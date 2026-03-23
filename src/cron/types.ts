@@ -41,6 +41,7 @@ export type CronDeliveryPatch = Partial<CronDelivery>;
 
 export type CronRunStatus = "ok" | "error" | "skipped";
 export type CronDeliveryStatus = "delivered" | "not-delivered" | "unknown" | "not-requested";
+export type CronWorkflowStatus = "success" | "failed" | "unknown";
 
 export type CronUsageSummary = {
   input_tokens?: number;
@@ -64,6 +65,13 @@ export type CronRunOutcome = {
   summary?: string;
   sessionId?: string;
   sessionKey?: string;
+  workflowStatus?: CronWorkflowStatus;
+  workflowFailureCode?: string;
+  workflowFailureCodes?: string[];
+  workflowExitCode?: number;
+  workflowTerminationSignal?: string;
+  workflowDelivered?: boolean;
+  workflowDeliveryStatus?: string;
 };
 
 export type CronFailureAlert = {
@@ -128,6 +136,13 @@ export type CronJobState = {
   lastDeliveryError?: string;
   /** Whether the last run's output was delivered to the target channel. */
   lastDelivered?: boolean;
+  lastWorkflowStatus?: CronWorkflowStatus;
+  lastWorkflowFailureCode?: string;
+  lastWorkflowFailureCodes?: string[];
+  lastWorkflowExitCode?: number;
+  lastWorkflowTerminationSignal?: string;
+  lastWorkflowDelivered?: boolean;
+  lastWorkflowDeliveryStatus?: string;
 };
 
 export type CronJob = CronJobBase<

@@ -8,6 +8,7 @@ import {
   DEFAULT_CRON_RUN_LOG_MAX_BYTES,
   getPendingCronRunLogWriteCountForTests,
   readCronRunLogEntries,
+  readCronRunLogEntriesPage,
   resolveCronRunLogPruneOptions,
   resolveCronRunLogPath,
 } from "./run-log.js";
@@ -270,6 +271,44 @@ describe("cron run log", () => {
       expect(entries[1]?.model).toBeUndefined();
       expect(entries[1]?.provider).toBeUndefined();
       expect(entries[1]?.usage?.input_tokens).toBeUndefined();
+    });
+  });
+
+  it("reads workflow metadata fields and supports failure-code queries", async () => {
+    await withRunLogDir("openclaw-cron-log-workflow-", async (dir) => {
+      const logPath = path.join(dir, "runs", "job-1.jsonl");
+
+      await appendCronRunLog(logPath, {
+        ts: 1,
+        jobId: "job-1",
+        action: "finished",
+        status: "error",
+        summary: "Run completed, but failed success criteria.",
+        workflowStatus: "failed",
+        workflowFailureCode: "MAIL_APP_TIMEOUT",
+        workflowFailureCodes: ["MAIL_APP_TIMEOUT", "OSASCRIPT_TIMEOUT"],
+        workflowExitCode: 1,
+        workflowTerminationSignal: "SIGTERM",
+        workflowDelivered: false,
+        workflowDeliveryStatus: "email_failed_telegram_sent",
+      });
+
+      const entries = await readCronRunLogEntries(logPath, { limit: 10, jobId: "job-1" });
+      expect(entries[0]?.workflowStatus).toBe("failed");
+      expect(entries[0]?.workflowFailureCode).toBe("MAIL_APP_TIMEOUT");
+      expect(entries[0]?.workflowFailureCodes).toEqual(["MAIL_APP_TIMEOUT", "OSASCRIPT_TIMEOUT"]);
+      expect(entries[0]?.workflowExitCode).toBe(1);
+      expect(entries[0]?.workflowTerminationSignal).toBe("SIGTERM");
+      expect(entries[0]?.workflowDelivered).toBe(false);
+      expect(entries[0]?.workflowDeliveryStatus).toBe("email_failed_telegram_sent");
+
+      const queryPage = await readCronRunLogEntriesPage(logPath, {
+        limit: 10,
+        jobId: "job-1",
+        query: "OSASCRIPT_TIMEOUT",
+      });
+      expect(queryPage.entries).toHaveLength(1);
+      expect(queryPage.entries[0]?.workflowFailureCode).toBe("MAIL_APP_TIMEOUT");
     });
   });
 
