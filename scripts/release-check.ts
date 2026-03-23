@@ -24,6 +24,7 @@ const requiredPathGroups = [
   "dist/plugin-sdk/compat.js",
   "dist/plugin-sdk/root-alias.cjs",
   "dist/build-info.json",
+  "dist/channel-catalog.json",
 ];
 const forbiddenPrefixes = ["dist-runtime/", "dist/OpenClaw.app/"];
 // 2026.3.12 ballooned to ~213.6 MiB unpacked and correlated with low-memory
@@ -74,6 +75,18 @@ function runPackDry(): PackResult[] {
     maxBuffer: 1024 * 1024 * 100,
   });
   return JSON.parse(raw) as PackResult[];
+}
+
+export function collectMissingPackPaths(paths: Iterable<string>): string[] {
+  const available = new Set(paths);
+  return requiredPathGroups
+    .flatMap((group) => {
+      if (Array.isArray(group)) {
+        return group.some((path) => available.has(path)) ? [] : [group.join(" or ")];
+      }
+      return available.has(group) ? [] : [group];
+    })
+    .toSorted();
 }
 
 export function collectForbiddenPackPaths(paths: Iterable<string>): string[] {
@@ -294,16 +307,8 @@ async function main() {
 
   const results = runPackDry();
   const files = results.flatMap((entry) => entry.files ?? []);
+  const missing = collectMissingPackPaths(files.map((file) => file.path));
   const paths = new Set(files.map((file) => file.path));
-
-  const missing = requiredPathGroups
-    .flatMap((group) => {
-      if (Array.isArray(group)) {
-        return group.some((path) => paths.has(path)) ? [] : [group.join(" or ")];
-      }
-      return paths.has(group) ? [] : [group];
-    })
-    .toSorted();
   const forbidden = collectForbiddenPackPaths(paths);
   const sizeErrors = collectPackUnpackedSizeErrors(results);
 
