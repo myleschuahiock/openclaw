@@ -263,6 +263,38 @@ describe("modelsStatusCommand auth overview", () => {
     }
   });
 
+  it("does not expose expired access-token timing for refreshable oauth profiles in JSON output", async () => {
+    const localRuntime = createRuntime();
+    const originalProfiles = { ...mocks.store.profiles };
+    mocks.store.profiles = {
+      ...mocks.store.profiles,
+      "openai-codex:default": {
+        type: "oauth",
+        provider: "openai-codex",
+        access: "eyJhbGciOi-ACCESS",
+        refresh: "oai-refresh-1234567890",
+        expires: Date.now() - 60_000,
+      },
+    };
+
+    try {
+      await modelsStatusCommand({ json: true }, localRuntime as never);
+      const payload = JSON.parse(String((localRuntime.log as Mock).mock.calls[0]?.[0]));
+      const oauthProfiles = payload.auth.oauth.profiles as Array<{
+        profileId: string;
+        status: string;
+        remainingMs?: number;
+        expiresAt?: number;
+      }>;
+      const codex = oauthProfiles.find((profile) => profile.profileId === "openai-codex:default");
+      expect(codex?.status).toBe("ok");
+      expect(codex?.remainingMs).toBeUndefined();
+      expect(codex?.expiresAt).toBeUndefined();
+    } finally {
+      mocks.store.profiles = originalProfiles;
+    }
+  });
+
   it("uses agent overrides and reports sources", async () => {
     const localRuntime = createRuntime();
     await withAgentScopeOverrides(

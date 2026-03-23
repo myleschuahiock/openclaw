@@ -56,15 +56,23 @@ describe("buildAuthHealthSummary", () => {
     });
 
     const statuses = profileStatuses(summary);
+    const profilesById = Object.fromEntries(
+      summary.profiles.map((profile) => [profile.profileId, profile]),
+    );
 
     expect(statuses["anthropic:ok"]).toBe("ok");
     // OAuth credentials with refresh tokens are auto-renewable, so they report "ok"
     expect(statuses["anthropic:expiring"]).toBe("ok");
     expect(statuses["anthropic:expired"]).toBe("ok");
     expect(statuses["anthropic:api"]).toBe("static");
+    expect(profilesById["anthropic:expiring"]?.remainingMs).toBeUndefined();
+    expect(profilesById["anthropic:expiring"]?.expiresAt).toBeUndefined();
+    expect(profilesById["anthropic:expired"]?.remainingMs).toBeUndefined();
+    expect(profilesById["anthropic:expired"]?.expiresAt).toBeUndefined();
 
     const provider = summary.providers.find((entry) => entry.provider === "anthropic");
     expect(provider?.status).toBe("ok");
+    expect(provider?.remainingMs).toBeGreaterThan(0);
   });
 
   it("reports expired for OAuth without a refresh token", () => {

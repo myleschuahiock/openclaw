@@ -170,15 +170,16 @@ function buildProfileHealth(params: {
   );
   // OAuth credentials with a valid refresh token auto-renew on first API call,
   // so don't warn about access token expiration.
-  const status =
-    hasRefreshToken && (rawStatus === "expired" || rawStatus === "expiring") ? "ok" : rawStatus;
+  const suppressAccessExpiry =
+    hasRefreshToken && (rawStatus === "expired" || rawStatus === "expiring");
+  const status = suppressAccessExpiry ? "ok" : rawStatus;
   return {
     profileId,
     provider: credential.provider,
     type: "oauth",
     status,
-    expiresAt: credential.expires,
-    remainingMs,
+    expiresAt: suppressAccessExpiry ? undefined : credential.expires,
+    remainingMs: suppressAccessExpiry ? undefined : remainingMs,
     source,
     label,
   };
