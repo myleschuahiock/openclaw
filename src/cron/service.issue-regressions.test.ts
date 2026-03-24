@@ -23,7 +23,7 @@ import {
   createRunningCronServiceState,
 } from "./service.test-harness.js";
 import { computeJobNextRunAtMs } from "./service/jobs.js";
-import { enqueueRun, run } from "./service/ops.js";
+import { enqueueRun, run, status as readStatus } from "./service/ops.js";
 import { createCronServiceState, type CronEvent } from "./service/state.js";
 import {
   DEFAULT_JOB_TIMEOUT_MS,
@@ -126,6 +126,60 @@ describe("Cron issue regressions", () => {
     expect(Number.isFinite(persistedIsolated?.state?.nextRunAtMs)).toBe(true);
 
     cron.stop();
+  });
+
+  it("status ignores currently running jobs when reporting the next wake", async () => {
+    const now = Date.parse("2026-02-06T10:05:00.000Z");
+    const runningAt = now - 60_000;
+    const futureAt = now + 15 * 60_000;
+    const state = createCronServiceState({
+      storePath: makeStorePath().storePath,
+      cronEnabled: true,
+      log: createNoopLogger(),
+      nowMs: () => now,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeatNow: vi.fn(),
+      runIsolatedAgentJob: createDefaultIsolatedRunner(),
+    });
+    state.store = {
+      version: 1,
+      jobs: [
+        {
+          id: "running-one-shot",
+          name: "running one-shot",
+          enabled: true,
+          createdAtMs: runningAt - 60_000,
+          updatedAtMs: runningAt,
+          schedule: { kind: "at", at: new Date(runningAt).toISOString() },
+          sessionTarget: "isolated",
+          wakeMode: "next-heartbeat",
+          payload: { kind: "agentTurn", message: "running" },
+          delivery: { mode: "none" },
+          state: {
+            nextRunAtMs: runningAt,
+            runningAtMs: runningAt,
+          },
+        },
+        {
+          id: "future-one-shot",
+          name: "future one-shot",
+          enabled: true,
+          createdAtMs: now - 60_000,
+          updatedAtMs: now - 60_000,
+          schedule: { kind: "at", at: new Date(futureAt).toISOString() },
+          sessionTarget: "isolated",
+          wakeMode: "next-heartbeat",
+          payload: { kind: "agentTurn", message: "future" },
+          delivery: { mode: "none" },
+          state: {
+            nextRunAtMs: futureAt,
+          },
+        },
+      ],
+    };
+
+    const status = await readStatus(state);
+    expect(status.nextWakeAtMs).toBe(futureAt);
   });
 
   it("repairs missing nextRunAtMs on non-schedule updates without touching other jobs", async () => {

@@ -500,6 +500,27 @@ export function nextWakeAtMs(state: CronServiceState) {
   }, first);
 }
 
+export function nextReadableWakeAtMs(state: CronServiceState) {
+  const jobs = state.store?.jobs ?? [];
+  const readable = jobs.filter(
+    (j) =>
+      j.enabled &&
+      isFiniteTimestamp(j.state.nextRunAtMs) &&
+      !isFiniteTimestamp(j.state.runningAtMs),
+  );
+  if (readable.length === 0) {
+    return undefined;
+  }
+  const first = readable[0]?.state.nextRunAtMs;
+  if (!isFiniteTimestamp(first)) {
+    return undefined;
+  }
+  return readable.reduce((min, j) => {
+    const next = j.state.nextRunAtMs;
+    return isFiniteTimestamp(next) ? Math.min(min, next) : min;
+  }, first);
+}
+
 export function createJob(state: CronServiceState, input: CronJobCreate): CronJob {
   const now = state.deps.nowMs();
   const id = crypto.randomUUID();

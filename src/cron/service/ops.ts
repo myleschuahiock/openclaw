@@ -9,6 +9,7 @@ import {
   createJob,
   findJobOrThrow,
   isJobDue,
+  nextReadableWakeAtMs,
   nextWakeAtMs,
   recomputeNextRuns,
   recomputeNextRunsForMaintenance,
@@ -142,7 +143,7 @@ export async function status(state: CronServiceState) {
       enabled: state.deps.cronEnabled,
       storePath: state.deps.storePath,
       jobs: state.store?.jobs.length ?? 0,
-      nextWakeAtMs: state.deps.cronEnabled ? (nextWakeAtMs(state) ?? null) : null,
+      nextWakeAtMs: state.deps.cronEnabled ? (nextReadableWakeAtMs(state) ?? null) : null,
     };
   });
 }
