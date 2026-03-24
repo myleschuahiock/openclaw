@@ -278,6 +278,72 @@ describe("CronService persists delivered status", () => {
     }
   });
 
+  it("persists delivery success when the summary says Telegram posted after email", async () => {
+    const store = await makeStorePath();
+    let capturedEvent:
+      | {
+          status?: string;
+          delivered?: boolean;
+          deliveryStatus?: string;
+          workflowDelivered?: boolean;
+          workflowDeliveryStatus?: string;
+        }
+      | undefined;
+    const cron = new CronService({
+      storePath: store.storePath,
+      cronEnabled: true,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeatNow: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({
+        status: "ok" as const,
+        delivered: false,
+        summary: [
+          "Done, myles — the run completed successfully (`exit code 0`).",
+          "",
+          "✅ Delivery order satisfied in the same run:",
+          "1) **Email sent first** (Apple Mail transport, verified in Sent mailbox)",
+          "2) **Telegram posted after email** to configured group/thread, including the **same attachments**",
+        ].join("\n"),
+      })),
+      onEvent: (evt) => {
+        if (evt.action === "finished") {
+          capturedEvent = {
+            status: evt.status,
+            delivered: evt.delivered,
+            deliveryStatus: evt.deliveryStatus,
+            workflowDelivered: evt.workflowDelivered,
+            workflowDeliveryStatus: evt.workflowDeliveryStatus,
+          };
+        }
+      },
+    });
+
+    await cron.start();
+    try {
+      const job = await cron.add(buildIsolatedAgentTurnJob("workflow-delivery-posted-success"));
+      vi.setSystemTime(new Date(job.state.nextRunAtMs! + 5));
+      await vi.runOnlyPendingTimersAsync();
+
+      await vi.waitFor(() => expect(capturedEvent?.status).toBe("ok"));
+
+      const updated = (await cron.list({ includeDisabled: true })).find(
+        (entry) => entry.id === job.id,
+      );
+      expect(updated?.state.lastStatus).toBe("ok");
+      expect(updated?.state.lastDelivered).toBe(true);
+      expect(updated?.state.lastDeliveryStatus).toBe("delivered");
+      expect(updated?.state.lastWorkflowDelivered).toBe(true);
+      expect(updated?.state.lastWorkflowDeliveryStatus).toBe("email_then_telegram");
+      expect(capturedEvent?.delivered).toBe(true);
+      expect(capturedEvent?.deliveryStatus).toBe("delivered");
+      expect(capturedEvent?.workflowDelivered).toBe(true);
+      expect(capturedEvent?.workflowDeliveryStatus).toBe("email_then_telegram");
+    } finally {
+      cron.stop();
+    }
+  });
+
   it("persists workflow failure metadata when the runner reports an ok status with a failed summary", async () => {
     const store = await makeStorePath();
     let capturedEvent:

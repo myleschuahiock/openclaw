@@ -85,6 +85,25 @@ describe("normalizeCronRunOutcome", () => {
     expect(result.workflowDeliveryStatus).toBe("email_then_telegram");
   });
 
+  it("treats 'Telegram posted after email' as delivered workflow success", () => {
+    const result = normalizeOutcome({
+      status: "ok" as const,
+      delivered: false,
+      summary: [
+        "Done, myles — the run completed successfully (`exit code 0`).",
+        "",
+        "✅ Delivery order satisfied in the same run:",
+        "1) **Email sent first** (Apple Mail transport, verified in Sent mailbox)",
+        "2) **Telegram posted after email** to configured group/thread, including the **same attachments**",
+      ].join("\n"),
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.workflowStatus).toBe("success");
+    expect(result.workflowDelivered).toBe(true);
+    expect(result.workflowDeliveryStatus).toBe("email_then_telegram");
+  });
+
   it("leaves successful summaries untouched", () => {
     const result = normalizeOutcome({
       status: "ok" as const,

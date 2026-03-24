@@ -147,7 +147,7 @@ function inferWorkflowDelivery(summary?: string): {
       text,
     );
   const emailSent = /\bemail\b[\s\S]{0,80}\b(sent|delivered)\b/i.test(text) && !emailFailed;
-  const telegramSent = /\btelegram\b[\s\S]{0,80}\b(sent|delivered)\b/i.test(text);
+  const telegramSent = /\btelegram\b[\s\S]{0,80}\b(sent|delivered|posted|uploaded)\b/i.test(text);
   const telegramBlocked =
     /\btelegram\b[\s\S]{0,80}\b(blocked|suppressed|not sent|not delivered)\b/i.test(text);
 
