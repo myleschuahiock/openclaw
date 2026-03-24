@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createMockCronStateForJobs } from "./service.test-harness.js";
-import { listPage } from "./service/ops.js";
+import { list, listPage } from "./service/ops.js";
 import type { CronJob } from "./types.js";
 
 function createBaseJob(overrides?: Partial<CronJob>): CronJob {
@@ -49,5 +49,28 @@ describe("cron listPage sort guards", () => {
 
     const page = await listPage(state, { sortBy: "nextRunAtMs", sortDir: "asc" });
     expect(page.jobs).toHaveLength(2);
+  });
+
+  it("sorts running jobs after pending jobs when ordering by nextRunAtMs", async () => {
+    const now = Date.parse("2026-02-27T15:30:00.000Z");
+    const jobs = [
+      createBaseJob({
+        id: "running-job",
+        name: "running",
+        state: { nextRunAtMs: now - 60_000, runningAtMs: now - 30_000 },
+      }),
+      createBaseJob({
+        id: "future-job",
+        name: "future",
+        state: { nextRunAtMs: now + 60_000 },
+      }),
+    ];
+    const state = createMockCronStateForJobs({ jobs, nowMs: now });
+
+    const page = await listPage(state, { sortBy: "nextRunAtMs", sortDir: "asc" });
+    const listed = await list(state, { includeDisabled: true });
+
+    expect(page.jobs.map((job) => job.id)).toEqual(["future-job", "running-job"]);
+    expect(listed.map((job) => job.id)).toEqual(["future-job", "running-job"]);
   });
 });
