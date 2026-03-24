@@ -965,6 +965,8 @@ export async function startGatewayServer(
             cronState = nextState.cronState;
             cron = cronState.cron;
             cronStorePath = cronState.storePath;
+            gatewayRequestContext.cron = cron;
+            gatewayRequestContext.cronStorePath = cronStorePath;
             browserControl = nextState.browserControl;
             channelHealthMonitor = nextState.channelHealthMonitor;
           },
@@ -1019,7 +1021,7 @@ export async function startGatewayServer(
     canvasHostServer,
     stopChannel,
     pluginServices,
-    cron,
+    cron: { stop: () => cron.stop() },
     heartbeatRunner,
     updateCheckStop: stopGatewayUpdateCheck,
     nodePresenceTimers,
@@ -1033,7 +1035,11 @@ export async function startGatewayServer(
     chatRunState,
     clients,
     configReloader,
-    browserControl,
+    browserControl: {
+      stop: async () => {
+        await browserControl?.stop().catch(() => {});
+      },
+    },
     wss,
     httpServer,
     httpServers,

@@ -562,8 +562,13 @@ export function armTimer(state: CronServiceState) {
       ).length ?? 0;
     state.deps.log.debug(
       { jobCount, enabledCount, withNextRun },
-      "cron: armTimer skipped - no jobs with nextRunAtMs",
+      "cron: armTimer idle poll - no jobs with nextRunAtMs",
     );
+    state.timer = setTimeout(() => {
+      void onTimer(state).catch((err) => {
+        state.deps.log.error({ err: String(err) }, "cron: timer tick failed");
+      });
+    }, MAX_TIMER_DELAY_MS);
     return;
   }
   const now = state.deps.nowMs();

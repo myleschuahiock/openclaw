@@ -141,6 +141,28 @@ describe("CronService - armTimer tight loop prevention", () => {
     timeoutSpy.mockRestore();
   });
 
+  it("arms a 60s idle poll when there are no jobs with nextRunAtMs", () => {
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const now = Date.parse("2026-02-28T12:32:00.000Z");
+
+    const state = createTimerState({
+      storePath: "/tmp/test-cron/jobs.json",
+      now,
+    });
+    state.store = {
+      version: 1,
+      jobs: [],
+    };
+
+    armTimer(state);
+
+    expect(state.timer).not.toBeNull();
+    const delays = extractTimeoutDelays(timeoutSpy);
+    expect(delays).toContain(60_000);
+
+    timeoutSpy.mockRestore();
+  });
+
   it("breaks the onTimer→armTimer hot-loop with stuck runningAtMs", async () => {
     const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const store = await makeStorePath();

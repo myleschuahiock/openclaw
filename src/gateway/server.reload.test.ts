@@ -15,11 +15,47 @@ const hoisted = vi.hoisted(() => {
   const cronInstances: Array<{
     start: ReturnType<typeof vi.fn>;
     stop: ReturnType<typeof vi.fn>;
+    add: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    remove: ReturnType<typeof vi.fn>;
+    run: ReturnType<typeof vi.fn>;
+    wake: ReturnType<typeof vi.fn>;
+    list: ReturnType<typeof vi.fn>;
+    listPage: ReturnType<typeof vi.fn>;
+    status: ReturnType<typeof vi.fn>;
   }> = [];
+  let cronJobSeq = 1;
 
   class CronServiceMock {
     start = vi.fn(async () => {});
     stop = vi.fn();
+    add = vi.fn(async (input: Record<string, unknown>) => ({
+      id: `cron-job-${cronJobSeq++}`,
+      ...input,
+      state: { nextRunAtMs: Date.parse("2026-12-31T00:00:00.000Z") },
+    }));
+    update = vi.fn(async (_id: string, patch: Record<string, unknown>) => ({
+      id: "updated-cron-job",
+      ...patch,
+    }));
+    remove = vi.fn(async () => ({ ok: true as const, removed: true as const }));
+    run = vi.fn(async () => ({ ok: true as const, ran: true as const }));
+    wake = vi.fn(() => ({ ok: true as const }));
+    list = vi.fn(async () => []);
+    listPage = vi.fn(async () => ({
+      jobs: [],
+      total: 0,
+      offset: 0,
+      limit: 0,
+      hasMore: false,
+      nextOffset: null,
+    }));
+    status = vi.fn(async () => ({
+      enabled: true,
+      storePath: "/tmp/cron.json",
+      jobs: 0,
+      nextWakeAtMs: null,
+    }));
     constructor() {
       cronInstances.push(this);
     }
@@ -440,6 +476,112 @@ describe("gateway hot reload", () => {
 
       expect(signalSpy).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("routes cron RPCs through the reloaded cron service after hot reload", async () => {
+    const { server, ws } = await startServerWithClient();
+    const baseline = hoisted.cronInstances.length;
+    try {
+      await connectOk(ws);
+      const onHotReload = hoisted.getOnHotReload();
+      expect(onHotReload).toBeTypeOf("function");
+
+      await onHotReload?.(
+        {
+          changedPaths: ["cron.enabled"],
+          restartGateway: false,
+          restartReasons: [],
+          hotReasons: [],
+          reloadHooks: false,
+          restartGmailWatcher: false,
+          restartBrowserControl: false,
+          restartCron: true,
+          restartHeartbeat: false,
+          restartChannels: new Set(),
+          noopPaths: [],
+        },
+        { cron: { enabled: true, store: "/tmp/reloaded-cron.json" } },
+      );
+
+      expect(hoisted.cronInstances.length).toBe(baseline + 1);
+      const original = hoisted.cronInstances[baseline - 1];
+      const reloaded = hoisted.cronInstances[baseline];
+
+      const result = await rpcReq<Record<string, unknown>>(ws, "cron.add", {
+        name: "reload-cron-rpc-smoke",
+        schedule: { kind: "at", at: "2026-12-31T00:00:00.000Z" },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: { kind: "agentTurn", message: "smoke" },
+        delivery: { mode: "none", channel: "last" },
+      });
+
+      expect(result.ok).toBe(true);
+      expect(original?.add).not.toHaveBeenCalled();
+      expect(reloaded?.add).toHaveBeenCalledTimes(1);
+    } finally {
+      ws.close();
+      await server.close();
+    }
+  });
+
+  it("stops the reloaded cron service on gateway shutdown", async () => {
+    const baseline = hoisted.cronInstances.length;
+
+    await withGatewayServer(async () => {
+      const onHotReload = hoisted.getOnHotReload();
+      expect(onHotReload).toBeTypeOf("function");
+
+      await onHotReload?.(
+        {
+          changedPaths: ["cron.enabled"],
+          restartGateway: false,
+          restartReasons: [],
+          hotReasons: [],
+          reloadHooks: false,
+          restartGmailWatcher: false,
+          restartBrowserControl: false,
+          restartCron: true,
+          restartHeartbeat: false,
+          restartChannels: new Set(),
+          noopPaths: [],
+        },
+        { cron: { enabled: true, store: "/tmp/reloaded-cron.json" } },
+      );
+    });
+
+    const instances = hoisted.cronInstances.slice(baseline);
+    expect(instances.length).toBe(2);
+    expect(instances[0]?.stop).toHaveBeenCalledTimes(1);
+    expect(instances[1]?.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the reloaded browser control on gateway shutdown", async () => {
+    const baseline = hoisted.browserStop.mock.calls.length;
+
+    await withGatewayServer(async () => {
+      const onHotReload = hoisted.getOnHotReload();
+      expect(onHotReload).toBeTypeOf("function");
+
+      await onHotReload?.(
+        {
+          changedPaths: ["browser.enabled"],
+          restartGateway: false,
+          restartReasons: [],
+          hotReasons: [],
+          reloadHooks: false,
+          restartGmailWatcher: false,
+          restartBrowserControl: true,
+          restartCron: false,
+          restartHeartbeat: false,
+          restartChannels: new Set(),
+          noopPaths: [],
+        },
+        { browser: { enabled: true }, web: { enabled: true } },
+      );
+    });
+
+    expect(hoisted.browserStop.mock.calls.length - baseline).toBe(2);
   });
 
   it("fails startup when required secret refs are unresolved", async () => {
