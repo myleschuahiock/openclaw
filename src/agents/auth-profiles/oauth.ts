@@ -13,7 +13,11 @@ import { resolveTokenExpiryState } from "./credential-state.js";
 import { formatAuthDoctorHint } from "./doctor.js";
 import { ensureAuthStoreFile, resolveAuthStorePath } from "./paths.js";
 import { suggestOAuthProfileIdForLegacyDefault } from "./repair.js";
-import { ensureAuthProfileStore, saveAuthProfileStore } from "./store.js";
+import {
+  ensureAuthProfileStore,
+  propagateOAuthProfilesToSiblingAgentStores,
+  saveAuthProfileStore,
+} from "./store.js";
 import type { AuthProfileStore } from "./types.js";
 
 const OAUTH_PROVIDER_IDS = new Set<string>(getOAuthProviders().map((provider) => provider.id));
@@ -210,6 +214,11 @@ function adoptRecoveredOpenaiCodexCredential(params: {
   }
   params.store.profiles[params.profileId] = next;
   saveAuthProfileStore(params.store, params.agentDir);
+  propagateOAuthProfilesToSiblingAgentStores({
+    profiles: [{ profileId: params.profileId, credential: { ...next } }],
+    sourceAgentDir: params.agentDir,
+    source: params.source,
+  });
   log.info("recovered openai-codex OAuth credentials after refresh_token_reused", {
     profileId: params.profileId,
     agentDir: params.agentDir,
@@ -376,6 +385,14 @@ async function refreshOAuthTokenWithLock(params: {
       type: "oauth",
     };
     saveAuthProfileStore(store, params.agentDir);
+    const updated = store.profiles[params.profileId];
+    if (updated?.type === "oauth") {
+      propagateOAuthProfilesToSiblingAgentStores({
+        profiles: [{ profileId: params.profileId, credential: { ...updated } }],
+        sourceAgentDir: params.agentDir,
+        source: "oauth_refresh",
+      });
+    }
 
     return result;
   });
@@ -617,6 +634,11 @@ export async function resolveApiKeyForProfile(
           // Main agent has fresh credentials - copy them to this agent and use them
           refreshedStore.profiles[profileId] = { ...mainCred };
           saveAuthProfileStore(refreshedStore, params.agentDir);
+          propagateOAuthProfilesToSiblingAgentStores({
+            profiles: [{ profileId, credential: { ...mainCred } }],
+            sourceAgentDir: params.agentDir,
+            source: "main_agent_fallback",
+          });
           log.info("inherited fresh OAuth credentials from main agent", {
             profileId,
             agentDir: params.agentDir,

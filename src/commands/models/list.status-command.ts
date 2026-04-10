@@ -4,6 +4,7 @@ import {
   resolveAgentDir,
   resolveAgentExplicitModelPrimary,
   resolveAgentModelFallbacksOverride,
+  resolveDefaultAgentId,
 } from "../../agents/agent-scope.js";
 import {
   buildAuthHealthSummary,
@@ -181,7 +182,7 @@ export async function modelsStatusCommand(
     shouldEnableShellEnvFallback(process.env) || cfg.env?.shellEnv?.enabled === true;
 
   const providerAuth = providers
-    .map((provider) => resolveProviderAuthOverview({ provider, cfg, store, modelsPath }))
+    .map((provider) => resolveProviderAuthOverview({ provider, cfg, store, modelsPath, agentDir }))
     .filter((entry) => {
       const hasAny = entry.profiles.count > 0 || Boolean(entry.env) || Boolean(entry.modelsJson);
       return hasAny;
@@ -243,6 +244,8 @@ export async function modelsStatusCommand(
           cfg,
           providers,
           modelCandidates,
+          agentId: agentId ?? resolveDefaultAgentId(cfg),
+          agentDir,
           options: {
             provider: opts.probeProvider,
             profileIds: probeProfileIds,

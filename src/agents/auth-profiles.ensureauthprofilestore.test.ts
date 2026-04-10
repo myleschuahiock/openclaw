@@ -123,6 +123,94 @@ describe("ensureAuthProfileStore", () => {
     }
   });
 
+  it("heals stale shared OAuth credentials in the child store when main is fresher", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-auth-oauth-heal-"));
+    const previousAgentDir = process.env.OPENCLAW_AGENT_DIR;
+    const previousPiAgentDir = process.env.PI_CODING_AGENT_DIR;
+    try {
+      const mainDir = path.join(root, "main-agent");
+      const agentDir = path.join(root, "agent-x");
+      fs.mkdirSync(mainDir, { recursive: true });
+      fs.mkdirSync(agentDir, { recursive: true });
+
+      process.env.OPENCLAW_AGENT_DIR = mainDir;
+      process.env.PI_CODING_AGENT_DIR = mainDir;
+
+      const mainExpiry = Date.now() + 2 * 60 * 60_000;
+      const childExpiry = Date.now() + 15 * 60_000;
+      fs.writeFileSync(
+        path.join(mainDir, "auth-profiles.json"),
+        `${JSON.stringify(
+          {
+            version: AUTH_STORE_VERSION,
+            profiles: {
+              "openai-codex:default": {
+                type: "oauth",
+                provider: "openai-codex",
+                access: "main-fresh-access",
+                refresh: "main-fresh-refresh",
+                expires: mainExpiry,
+              },
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(agentDir, "auth-profiles.json"),
+        `${JSON.stringify(
+          {
+            version: AUTH_STORE_VERSION,
+            profiles: {
+              "openai-codex:default": {
+                type: "oauth",
+                provider: "openai-codex",
+                access: "child-stale-access",
+                refresh: "child-stale-refresh",
+                expires: childExpiry,
+              },
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+
+      const store = ensureAuthProfileStore(agentDir);
+      expect(store.profiles["openai-codex:default"]).toMatchObject({
+        access: "main-fresh-access",
+        refresh: "main-fresh-refresh",
+        expires: mainExpiry,
+      });
+
+      const healedChildStore = JSON.parse(
+        fs.readFileSync(path.join(agentDir, "auth-profiles.json"), "utf8"),
+      ) as {
+        profiles: Record<string, { access?: string; refresh?: string; expires?: number }>;
+      };
+      expect(healedChildStore.profiles["openai-codex:default"]).toMatchObject({
+        access: "main-fresh-access",
+        refresh: "main-fresh-refresh",
+        expires: mainExpiry,
+      });
+    } finally {
+      if (previousAgentDir === undefined) {
+        delete process.env.OPENCLAW_AGENT_DIR;
+      } else {
+        process.env.OPENCLAW_AGENT_DIR = previousAgentDir;
+      }
+      if (previousPiAgentDir === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = previousPiAgentDir;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("normalizes auth-profiles credential aliases with canonical-field precedence", () => {
     const cases = [
       {

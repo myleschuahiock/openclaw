@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { parseByteSize } from "../cli/parse-bytes.js";
 import type { CronConfig } from "../config/types.cron.js";
-import type { CronDeliveryStatus, CronRunStatus, CronRunTelemetry } from "./types.js";
+import type { CronDeliveryStatus, CronRunKind, CronRunStatus, CronRunTelemetry } from "./types.js";
 
 export type CronRunLogEntry = {
   ts: number;
@@ -23,7 +23,10 @@ export type CronRunLogEntry = {
   workflowDeliveryStatus?: string;
   sessionId?: string;
   sessionKey?: string;
+  runKind?: CronRunKind;
   runAtMs?: number;
+  scheduledRunAtMs?: number;
+  catchupForRunAtMs?: number;
   durationMs?: number;
   nextRunAtMs?: number;
 } & CronRunTelemetry;

@@ -70,4 +70,28 @@ describe("resolveProviderAuthOverview", () => {
     expect(overview.effective.detail).not.toContain("marker(");
     expect(overview.effective.detail).not.toContain("OPENAI_API_KEY");
   });
+
+  it("reports the requested agent auth store path when profiles are present", () => {
+    const overview = resolveProviderAuthOverview({
+      provider: "openai-codex",
+      cfg: {},
+      store: {
+        version: 1,
+        profiles: {
+          "openai-codex:default": {
+            type: "oauth",
+            provider: "openai-codex",
+            access: "token",
+            refresh: "refresh-token",
+            expires: Date.now() + 60_000,
+          },
+        },
+      } as never,
+      modelsPath: "/tmp/models.json",
+      agentDir: "/tmp/trading-asst-agent",
+    });
+
+    expect(overview.effective.kind).toBe("profiles");
+    expect(overview.effective.detail).toContain("/tmp/trading-asst-agent/auth-profiles.json");
+  });
 });

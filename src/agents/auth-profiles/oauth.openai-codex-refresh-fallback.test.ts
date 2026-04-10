@@ -86,6 +86,7 @@ describe("resolveApiKeyForProfile openai-codex refresh fallback", () => {
   ]);
   let tempRoot = "";
   let agentDir = "";
+  let siblingAgentDir = "";
 
   beforeEach(async () => {
     getOAuthApiKeyMock.mockReset().mockImplementation(async () => {
@@ -97,7 +98,9 @@ describe("resolveApiKeyForProfile openai-codex refresh fallback", () => {
     clearRuntimeAuthProfileStoreSnapshots();
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-refresh-fallback-"));
     agentDir = path.join(tempRoot, "agents", "main", "agent");
+    siblingAgentDir = path.join(tempRoot, "agents", "general-manager", "agent");
     await fs.mkdir(agentDir, { recursive: true });
+    await fs.mkdir(siblingAgentDir, { recursive: true });
     process.env.OPENCLAW_STATE_DIR = tempRoot;
     process.env.OPENCLAW_AGENT_DIR = agentDir;
     process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -228,6 +231,80 @@ describe("resolveApiKeyForProfile openai-codex refresh fallback", () => {
       access: "retried-access-token",
       refresh: "retried-refresh-token",
       accountId: "acct-final",
+    });
+    const propagatedSiblingStore = JSON.parse(
+      await fs.readFile(path.join(siblingAgentDir, "auth-profiles.json"), "utf8"),
+    ) as AuthProfileStore;
+    expect(propagatedSiblingStore.profiles[profileId]).toMatchObject({
+      type: "oauth",
+      provider: "openai-codex",
+      access: "retried-access-token",
+      refresh: "retried-refresh-token",
+      accountId: "acct-final",
+    });
+  });
+
+  it("does not overwrite a sibling's non-oauth override during propagated OAuth healing", async () => {
+    const profileId = "openai-codex:default";
+    saveAuthProfileStore(
+      createExpiredOauthStore({
+        profileId,
+        provider: "openai-codex",
+        access: "stale-access-token",
+      }),
+      agentDir,
+    );
+    saveAuthProfileStore(
+      {
+        version: 1,
+        profiles: {
+          [profileId]: {
+            type: "api_key",
+            provider: "openai-codex",
+            key: "sibling-local-api-key",
+          },
+        },
+      },
+      siblingAgentDir,
+    );
+    readCodexCliCredentialsCachedMock
+      .mockImplementationOnce(() => null)
+      .mockImplementationOnce(() => null)
+      .mockReturnValue({
+        type: "oauth",
+        provider: "openai-codex",
+        access: "replacement-access-token",
+        refresh: "replacement-refresh-token",
+        expires: Date.now() - 10_000,
+        accountId: "acct-replacement",
+      });
+    getOAuthApiKeyMock
+      .mockImplementationOnce(async () => {
+        throw new Error('{"code":"refresh_token_reused"}');
+      })
+      .mockImplementationOnce(async () => ({
+        apiKey: "retried-access-token",
+        newCredentials: {
+          access: "retried-access-token",
+          refresh: "retried-refresh-token",
+          expires: Date.now() + 60_000,
+          accountId: "acct-final",
+        },
+      }));
+
+    await resolveApiKeyForProfile({
+      store: ensureAuthProfileStore(agentDir),
+      profileId,
+      agentDir,
+    });
+
+    const siblingStore = JSON.parse(
+      await fs.readFile(path.join(siblingAgentDir, "auth-profiles.json"), "utf8"),
+    ) as AuthProfileStore;
+    expect(siblingStore.profiles[profileId]).toMatchObject({
+      type: "api_key",
+      provider: "openai-codex",
+      key: "sibling-local-api-key",
     });
   });
 

@@ -42,6 +42,7 @@ export type CronDeliveryPatch = Partial<CronDelivery>;
 export type CronRunStatus = "ok" | "error" | "skipped";
 export type CronDeliveryStatus = "delivered" | "not-delivered" | "unknown" | "not-requested";
 export type CronWorkflowStatus = "success" | "failed" | "unknown";
+export type CronRunKind = "scheduled" | "catchup" | "manual";
 
 export type CronUsageSummary = {
   input_tokens?: number;
@@ -118,6 +119,8 @@ export type CronJobState = {
   nextRunAtMs?: number;
   runningAtMs?: number;
   lastRunAtMs?: number;
+  lastRunKind?: CronRunKind;
+  lastScheduledRunAtMs?: number;
   /** Preferred execution outcome field. */
   lastRunStatus?: CronRunStatus;
   /** Back-compat alias for lastRunStatus. */
@@ -143,6 +146,9 @@ export type CronJobState = {
   lastWorkflowTerminationSignal?: string;
   lastWorkflowDelivered?: boolean;
   lastWorkflowDeliveryStatus?: string;
+  pendingCatchupForRunAtMs?: number;
+  pendingCatchupNextRunAtMs?: number;
+  lastCatchupQueuedForRunAtMs?: number;
 };
 
 export type CronJob = CronJobBase<

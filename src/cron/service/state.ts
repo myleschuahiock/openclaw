@@ -6,6 +6,7 @@ import type {
   CronJobCreate,
   CronJobPatch,
   CronMessageChannel,
+  CronRunKind,
   CronRunOutcome,
   CronRunStatus,
   CronRunTelemetry,
@@ -32,6 +33,9 @@ export type CronEvent = {
   workflowDeliveryStatus?: string;
   sessionId?: string;
   sessionKey?: string;
+  runKind?: CronRunKind;
+  scheduledRunAtMs?: number;
+  catchupForRunAtMs?: number;
   nextRunAtMs?: number;
 } & CronRunTelemetry;
 

@@ -41,6 +41,7 @@ export function resolveProviderAuthOverview(params: {
   cfg: OpenClawConfig;
   store: AuthProfileStore;
   modelsPath: string;
+  agentDir?: string;
 }): ProviderAuthOverview {
   const { provider, cfg, store } = params;
   const now = Date.now();
@@ -104,7 +105,7 @@ export function resolveProviderAuthOverview(params: {
     if (profiles.length > 0) {
       return {
         kind: "profiles",
-        detail: shortenHomePath(resolveAuthStorePathForDisplay()),
+        detail: shortenHomePath(resolveAuthStorePathForDisplay(params.agentDir)),
       };
     }
     if (envKey) {

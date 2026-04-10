@@ -9,6 +9,7 @@ import type {
   CronDeliveryStatus,
   CronJob,
   CronMessageChannel,
+  CronRunKind,
   CronRunOutcome,
   CronRunStatus,
   CronRunTelemetry,
@@ -50,6 +51,9 @@ type TimedCronRunOutcome = CronRunOutcome &
     jobId: string;
     delivered?: boolean;
     deliveryAttempted?: boolean;
+    runKind: CronRunKind;
+    scheduledRunAtMs: number;
+    catchupForRunAtMs?: number;
     startedAt: number;
     endedAt: number;
   };
@@ -160,6 +164,76 @@ function resolveRetryConfig(cronConfig?: CronConfig) {
         ? retry.backoffMs
         : DEFAULT_BACKOFF_SCHEDULE_MS.slice(0, 3),
     retryOn: Array.isArray(retry?.retryOn) && retry.retryOn.length > 0 ? retry.retryOn : undefined,
+  };
+}
+
+const AUTH_BOOTSTRAP_CATCHUP_PATTERNS = [
+  /oauth token refresh failed/i,
+  /refresh_token_reused/i,
+  /isolated auth bootstrap/i,
+] as const;
+
+function isAuthBootstrapCatchupError(error?: string): boolean {
+  if (!error || typeof error !== "string") {
+    return false;
+  }
+  return AUTH_BOOTSTRAP_CATCHUP_PATTERNS.some((pattern) => pattern.test(error));
+}
+
+function clearPendingCatchup(job: CronJob): void {
+  job.state.pendingCatchupForRunAtMs = undefined;
+  job.state.pendingCatchupNextRunAtMs = undefined;
+}
+
+function resolveScheduledRunMetadata(
+  job: CronJob,
+  fallbackRunAtMs: number,
+): {
+  runKind: Exclude<CronRunKind, "manual">;
+  scheduledRunAtMs: number;
+  catchupForRunAtMs?: number;
+} {
+  const pendingCatchupForRunAtMs = job.state.pendingCatchupForRunAtMs;
+  const pendingCatchupNextRunAtMs = job.state.pendingCatchupNextRunAtMs;
+  const runSlotAtMs =
+    typeof job.state.nextRunAtMs === "number" && Number.isFinite(job.state.nextRunAtMs)
+      ? job.state.nextRunAtMs
+      : fallbackRunAtMs;
+
+  if (
+    typeof pendingCatchupForRunAtMs === "number" &&
+    typeof pendingCatchupNextRunAtMs === "number" &&
+    runSlotAtMs === pendingCatchupNextRunAtMs
+  ) {
+    return {
+      runKind: "catchup",
+      scheduledRunAtMs: pendingCatchupForRunAtMs,
+      catchupForRunAtMs: pendingCatchupForRunAtMs,
+    };
+  }
+
+  let scheduledRunAtMs = runSlotAtMs;
+  if (job.schedule.kind === "cron" && runSlotAtMs > fallbackRunAtMs) {
+    try {
+      const previousRunAtMs = computeJobPreviousRunAtMs(job, fallbackRunAtMs);
+      const lastRunAtMs = job.state.lastRunAtMs;
+      const hasMissedPreviousSlot =
+        typeof previousRunAtMs === "number" &&
+        Number.isFinite(previousRunAtMs) &&
+        previousRunAtMs <= fallbackRunAtMs &&
+        (!Number.isFinite(lastRunAtMs) ||
+          previousRunAtMs > (lastRunAtMs ?? Number.NEGATIVE_INFINITY));
+      if (hasMissedPreviousSlot) {
+        scheduledRunAtMs = previousRunAtMs;
+      }
+    } catch {
+      // Fall back to persisted nextRunAtMs when previous-slot reconstruction fails.
+    }
+  }
+
+  return {
+    runKind: "scheduled",
+    scheduledRunAtMs,
   };
 }
 
@@ -327,8 +401,20 @@ export function applyJobResult(
   opts?: {
     // Preserve recurring "every" anchors for manual force runs.
     preserveSchedule?: boolean;
+    runKind?: CronRunKind;
+    scheduledRunAtMs?: number;
+    catchupForRunAtMs?: number;
   },
 ): boolean {
+  const runKind = opts?.runKind ?? "scheduled";
+  const scheduledRunAtMs = opts?.scheduledRunAtMs ?? result.startedAt;
+  if (
+    runKind === "scheduled" &&
+    typeof job.state.pendingCatchupForRunAtMs === "number" &&
+    scheduledRunAtMs > job.state.pendingCatchupForRunAtMs
+  ) {
+    clearPendingCatchup(job);
+  }
   const prevLastRunAtMs = job.state.lastRunAtMs;
   const computeNextWithPreservedLastRun = (nowMs: number) => {
     const saved = job.state.lastRunAtMs;
@@ -341,6 +427,8 @@ export function applyJobResult(
   };
   job.state.runningAtMs = undefined;
   job.state.lastRunAtMs = result.startedAt;
+  job.state.lastRunKind = runKind;
+  job.state.lastScheduledRunAtMs = scheduledRunAtMs;
   job.state.lastRunStatus = result.status;
   job.state.lastStatus = result.status;
   job.state.lastDurationMs = Math.max(0, result.endedAt - result.startedAt);
@@ -395,6 +483,10 @@ export function applyJobResult(
     job.state.lastFailureAlertAtMs = undefined;
   }
 
+  if (runKind === "catchup" || result.status !== "error") {
+    clearPendingCatchup(job);
+  }
+
   const shouldDelete =
     job.schedule.kind === "at" && job.deleteAfterRun === true && result.status === "ok";
 
@@ -443,6 +535,29 @@ export function applyJobResult(
         }
       }
     } else if (result.status === "error" && job.enabled) {
+      if (
+        runKind === "scheduled" &&
+        isAuthBootstrapCatchupError(result.error) &&
+        job.state.lastCatchupQueuedForRunAtMs !== scheduledRunAtMs
+      ) {
+        const backoff = errorBackoffMs(job.state.consecutiveErrors ?? 1);
+        const catchupNextRunAtMs = result.endedAt + backoff;
+        job.state.pendingCatchupForRunAtMs = scheduledRunAtMs;
+        job.state.pendingCatchupNextRunAtMs = catchupNextRunAtMs;
+        job.state.lastCatchupQueuedForRunAtMs = scheduledRunAtMs;
+        job.state.nextRunAtMs = catchupNextRunAtMs;
+        state.deps.log.info(
+          {
+            jobId: job.id,
+            scheduledRunAtMs,
+            catchupNextRunAtMs,
+            backoffMs: backoff,
+          },
+          "cron: queued automatic auth-bootstrap catch-up run",
+        );
+        return shouldDelete;
+      }
+
       // Apply exponential backoff for errored jobs to prevent retry storms.
       const backoff = errorBackoffMs(job.state.consecutiveErrors ?? 1);
       let normalNext: number | undefined;
@@ -517,22 +632,35 @@ function applyOutcomeToStoredJob(state: CronServiceState, result: TimedCronRunOu
     return;
   }
 
-  const shouldDelete = applyJobResult(state, job, {
-    status: result.status,
-    error: result.error,
-    delivered: result.delivered,
-    workflowStatus: result.workflowStatus,
-    workflowFailureCode: result.workflowFailureCode,
-    workflowFailureCodes: result.workflowFailureCodes,
-    workflowExitCode: result.workflowExitCode,
-    workflowTerminationSignal: result.workflowTerminationSignal,
-    workflowDelivered: result.workflowDelivered,
-    workflowDeliveryStatus: result.workflowDeliveryStatus,
-    startedAt: result.startedAt,
-    endedAt: result.endedAt,
-  });
+  const shouldDelete = applyJobResult(
+    state,
+    job,
+    {
+      status: result.status,
+      error: result.error,
+      delivered: result.delivered,
+      workflowStatus: result.workflowStatus,
+      workflowFailureCode: result.workflowFailureCode,
+      workflowFailureCodes: result.workflowFailureCodes,
+      workflowExitCode: result.workflowExitCode,
+      workflowTerminationSignal: result.workflowTerminationSignal,
+      workflowDelivered: result.workflowDelivered,
+      workflowDeliveryStatus: result.workflowDeliveryStatus,
+      startedAt: result.startedAt,
+      endedAt: result.endedAt,
+    },
+    {
+      runKind: result.runKind,
+      scheduledRunAtMs: result.scheduledRunAtMs,
+      catchupForRunAtMs: result.catchupForRunAtMs,
+    },
+  );
 
-  emitJobFinished(state, job, result, result.startedAt);
+  emitJobFinished(state, job, result, result.startedAt, {
+    runKind: result.runKind,
+    scheduledRunAtMs: result.scheduledRunAtMs,
+    catchupForRunAtMs: result.catchupForRunAtMs,
+  });
 
   if (shouldDelete) {
     store.jobs = jobs.filter((entry) => entry.id !== job.id);
@@ -668,13 +796,29 @@ export async function onTimer(state: CronServiceState) {
     }): Promise<TimedCronRunOutcome> => {
       const { id, job } = params;
       const startedAt = state.deps.nowMs();
+      const runMeta = resolveScheduledRunMetadata(job, startedAt);
       job.state.runningAtMs = startedAt;
-      emit(state, { jobId: job.id, action: "started", runAtMs: startedAt });
+      emit(state, {
+        jobId: job.id,
+        action: "started",
+        runAtMs: startedAt,
+        runKind: runMeta.runKind,
+        scheduledRunAtMs: runMeta.scheduledRunAtMs,
+        catchupForRunAtMs: runMeta.catchupForRunAtMs,
+      });
       const jobTimeoutMs = resolveCronJobTimeoutMs(job);
 
       try {
         const result = await executeJobCoreWithTimeout(state, job);
-        return { jobId: id, ...result, startedAt, endedAt: state.deps.nowMs() };
+        return {
+          jobId: id,
+          ...result,
+          runKind: runMeta.runKind,
+          scheduledRunAtMs: runMeta.scheduledRunAtMs,
+          catchupForRunAtMs: runMeta.catchupForRunAtMs,
+          startedAt,
+          endedAt: state.deps.nowMs(),
+        };
       } catch (err) {
         const errorText = isAbortError(err) ? timeoutErrorMessage() : String(err);
         state.deps.log.warn(
@@ -685,6 +829,9 @@ export async function onTimer(state: CronServiceState) {
           jobId: id,
           status: "error",
           error: errorText,
+          runKind: runMeta.runKind,
+          scheduledRunAtMs: runMeta.scheduledRunAtMs,
+          catchupForRunAtMs: runMeta.catchupForRunAtMs,
           startedAt,
           endedAt: state.deps.nowMs(),
         });
@@ -968,7 +1115,15 @@ async function runStartupCatchupCandidate(
   candidate: StartupCatchupCandidate,
 ): Promise<TimedCronRunOutcome> {
   const startedAt = state.deps.nowMs();
-  emit(state, { jobId: candidate.job.id, action: "started", runAtMs: startedAt });
+  const runMeta = resolveScheduledRunMetadata(candidate.job, startedAt);
+  emit(state, {
+    jobId: candidate.job.id,
+    action: "started",
+    runAtMs: startedAt,
+    runKind: runMeta.runKind,
+    scheduledRunAtMs: runMeta.scheduledRunAtMs,
+    catchupForRunAtMs: runMeta.catchupForRunAtMs,
+  });
   try {
     const result = await executeJobCoreWithTimeout(state, candidate.job);
     return {
@@ -989,6 +1144,9 @@ async function runStartupCatchupCandidate(
       model: result.model,
       provider: result.provider,
       usage: result.usage,
+      runKind: runMeta.runKind,
+      scheduledRunAtMs: runMeta.scheduledRunAtMs,
+      catchupForRunAtMs: runMeta.catchupForRunAtMs,
       startedAt,
       endedAt: state.deps.nowMs(),
     };
@@ -997,6 +1155,9 @@ async function runStartupCatchupCandidate(
       jobId: candidate.jobId,
       status: "error",
       error: String(err),
+      runKind: runMeta.runKind,
+      scheduledRunAtMs: runMeta.scheduledRunAtMs,
+      catchupForRunAtMs: runMeta.catchupForRunAtMs,
       startedAt,
       endedAt: state.deps.nowMs(),
     });
@@ -1258,9 +1419,17 @@ export async function executeJob(
     job.state = {};
   }
   const startedAt = state.deps.nowMs();
+  const runMeta = resolveScheduledRunMetadata(job, startedAt);
   job.state.runningAtMs = startedAt;
   job.state.lastError = undefined;
-  emit(state, { jobId: job.id, action: "started", runAtMs: startedAt });
+  emit(state, {
+    jobId: job.id,
+    action: "started",
+    runAtMs: startedAt,
+    runKind: runMeta.runKind,
+    scheduledRunAtMs: runMeta.scheduledRunAtMs,
+    catchupForRunAtMs: runMeta.catchupForRunAtMs,
+  });
 
   let coreResult: {
     status: CronRunStatus;
@@ -1274,22 +1443,35 @@ export async function executeJob(
   }
 
   const endedAt = state.deps.nowMs();
-  const shouldDelete = applyJobResult(state, job, {
-    status: coreResult.status,
-    error: coreResult.error,
-    delivered: coreResult.delivered,
-    workflowStatus: coreResult.workflowStatus,
-    workflowFailureCode: coreResult.workflowFailureCode,
-    workflowFailureCodes: coreResult.workflowFailureCodes,
-    workflowExitCode: coreResult.workflowExitCode,
-    workflowTerminationSignal: coreResult.workflowTerminationSignal,
-    workflowDelivered: coreResult.workflowDelivered,
-    workflowDeliveryStatus: coreResult.workflowDeliveryStatus,
-    startedAt,
-    endedAt,
-  });
+  const shouldDelete = applyJobResult(
+    state,
+    job,
+    {
+      status: coreResult.status,
+      error: coreResult.error,
+      delivered: coreResult.delivered,
+      workflowStatus: coreResult.workflowStatus,
+      workflowFailureCode: coreResult.workflowFailureCode,
+      workflowFailureCodes: coreResult.workflowFailureCodes,
+      workflowExitCode: coreResult.workflowExitCode,
+      workflowTerminationSignal: coreResult.workflowTerminationSignal,
+      workflowDelivered: coreResult.workflowDelivered,
+      workflowDeliveryStatus: coreResult.workflowDeliveryStatus,
+      startedAt,
+      endedAt,
+    },
+    {
+      runKind: runMeta.runKind,
+      scheduledRunAtMs: runMeta.scheduledRunAtMs,
+      catchupForRunAtMs: runMeta.catchupForRunAtMs,
+    },
+  );
 
-  emitJobFinished(state, job, coreResult, startedAt);
+  emitJobFinished(state, job, coreResult, startedAt, {
+    runKind: runMeta.runKind,
+    scheduledRunAtMs: runMeta.scheduledRunAtMs,
+    catchupForRunAtMs: runMeta.catchupForRunAtMs,
+  });
 
   if (shouldDelete && state.store) {
     state.store.jobs = state.store.jobs.filter((j) => j.id !== job.id);
@@ -1306,6 +1488,11 @@ function emitJobFinished(
   } & CronRunOutcome &
     CronRunTelemetry,
   runAtMs: number,
+  meta?: {
+    runKind?: CronRunKind;
+    scheduledRunAtMs?: number;
+    catchupForRunAtMs?: number;
+  },
 ) {
   emit(state, {
     jobId: job.id,
@@ -1325,7 +1512,10 @@ function emitJobFinished(
     workflowDeliveryStatus: result.workflowDeliveryStatus,
     sessionId: result.sessionId,
     sessionKey: result.sessionKey,
+    runKind: meta?.runKind,
     runAtMs,
+    scheduledRunAtMs: meta?.scheduledRunAtMs,
+    catchupForRunAtMs: meta?.catchupForRunAtMs,
     durationMs: job.state.lastDurationMs,
     nextRunAtMs: job.state.nextRunAtMs,
     model: result.model,

@@ -423,7 +423,13 @@ async function prepareManualRun(
     // Persist the running marker before releasing lock so timer ticks that
     // force-reload from disk cannot start the same job concurrently.
     await persist(state);
-    emit(state, { jobId: job.id, action: "started", runAtMs: now });
+    emit(state, {
+      jobId: job.id,
+      action: "started",
+      runAtMs: now,
+      runKind: "manual",
+      scheduledRunAtMs: now,
+    });
     const executionJob = JSON.parse(JSON.stringify(job)) as CronJob;
     return {
       ok: true,
@@ -476,7 +482,11 @@ async function finishPreparedManualRun(
         startedAt,
         endedAt,
       },
-      { preserveSchedule: mode === "force" },
+      {
+        preserveSchedule: mode === "force",
+        runKind: "manual",
+        scheduledRunAtMs: startedAt,
+      },
     );
 
     emit(state, {
@@ -497,7 +507,9 @@ async function finishPreparedManualRun(
       workflowDeliveryStatus: coreResult.workflowDeliveryStatus,
       sessionId: coreResult.sessionId,
       sessionKey: coreResult.sessionKey,
+      runKind: "manual",
       runAtMs: startedAt,
+      scheduledRunAtMs: startedAt,
       durationMs: job.state.lastDurationMs,
       nextRunAtMs: job.state.nextRunAtMs,
       model: coreResult.model,

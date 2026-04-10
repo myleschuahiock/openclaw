@@ -1802,6 +1802,93 @@ describe("Cron issue regressions", () => {
     expect(job.enabled).toBe(true);
   });
 
+  it("queues exactly one automatic catch-up run for recurring auth-bootstrap failures", () => {
+    const startedAt = Date.parse("2026-03-27T05:00:00.000Z");
+    const endedAt = startedAt + 453;
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: "/tmp/cron-auth-catchup.json",
+      log: noopLogger,
+      nowMs: () => endedAt,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeatNow: vi.fn(),
+      runIsolatedAgentJob: createDefaultIsolatedRunner(),
+    });
+    const job = createIsolatedRegressionJob({
+      id: "auth-bootstrap-catchup",
+      name: "auth-bootstrap-catchup",
+      scheduledAt: startedAt,
+      schedule: { kind: "cron", expr: "0 5 * * *", tz: "UTC" },
+      payload: { kind: "agentTurn", message: "run daily report" },
+      state: { nextRunAtMs: startedAt, runningAtMs: startedAt - 100 },
+    });
+
+    const shouldDelete = applyJobResult(state, job, {
+      status: "error",
+      error:
+        'FailoverError: OAuth token refresh failed for openai-codex: {"code":"refresh_token_reused"}',
+      startedAt,
+      endedAt,
+    });
+
+    expect(shouldDelete).toBe(false);
+    expect(job.state.lastRunKind).toBe("scheduled");
+    expect(job.state.pendingCatchupForRunAtMs).toBe(startedAt);
+    expect(job.state.pendingCatchupNextRunAtMs).toBe(endedAt + 30_000);
+    expect(job.state.lastCatchupQueuedForRunAtMs).toBe(startedAt);
+    expect(job.state.nextRunAtMs).toBe(endedAt + 30_000);
+  });
+
+  it("clears pending catch-up markers after the automatic catch-up run completes", () => {
+    const scheduledRunAtMs = Date.parse("2026-03-27T05:00:00.000Z");
+    const catchupStartedAt = scheduledRunAtMs + 30_000;
+    const endedAt = catchupStartedAt + 750;
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: "/tmp/cron-auth-catchup-clear.json",
+      log: noopLogger,
+      nowMs: () => endedAt,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeatNow: vi.fn(),
+      runIsolatedAgentJob: createDefaultIsolatedRunner(),
+    });
+    const job = createIsolatedRegressionJob({
+      id: "auth-bootstrap-catchup-clear",
+      name: "auth-bootstrap-catchup-clear",
+      scheduledAt: scheduledRunAtMs,
+      schedule: { kind: "cron", expr: "0 5 * * *", tz: "UTC" },
+      payload: { kind: "agentTurn", message: "run daily report" },
+      state: {
+        nextRunAtMs: catchupStartedAt,
+        pendingCatchupForRunAtMs: scheduledRunAtMs,
+        pendingCatchupNextRunAtMs: catchupStartedAt,
+        lastCatchupQueuedForRunAtMs: scheduledRunAtMs,
+      },
+    });
+
+    const shouldDelete = applyJobResult(
+      state,
+      job,
+      {
+        status: "ok",
+        startedAt: catchupStartedAt,
+        endedAt,
+      },
+      {
+        runKind: "catchup",
+        scheduledRunAtMs,
+        catchupForRunAtMs: scheduledRunAtMs,
+      },
+    );
+
+    expect(shouldDelete).toBe(false);
+    expect(job.state.lastRunKind).toBe("catchup");
+    expect(job.state.lastScheduledRunAtMs).toBe(scheduledRunAtMs);
+    expect(job.state.pendingCatchupForRunAtMs).toBeUndefined();
+    expect(job.state.pendingCatchupNextRunAtMs).toBeUndefined();
+    expect(job.state.nextRunAtMs).toBeGreaterThan(endedAt);
+  });
+
   it("force run preserves 'every' anchor while recording manual lastRunAtMs", () => {
     const nowMs = Date.now();
     const everyMs = 24 * 60 * 60 * 1_000;

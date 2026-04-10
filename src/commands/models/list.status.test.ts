@@ -32,9 +32,11 @@ const mocks = vi.hoisted(() => {
     store,
     resolveOpenClawAgentDir: vi.fn().mockReturnValue("/tmp/openclaw-agent"),
     resolveAgentDir: vi.fn().mockReturnValue("/tmp/openclaw-agent"),
+    resolveAgentWorkspaceDir: vi.fn().mockReturnValue("/tmp/openclaw-workspace"),
     resolveAgentExplicitModelPrimary: vi.fn().mockReturnValue(undefined),
     resolveAgentEffectiveModelPrimary: vi.fn().mockReturnValue(undefined),
     resolveAgentModelFallbacksOverride: vi.fn().mockReturnValue(undefined),
+    resolveDefaultAgentId: vi.fn().mockReturnValue("main"),
     listAgentIds: vi.fn().mockReturnValue(["main", "jeremiah"]),
     ensureAuthProfileStore: vi.fn().mockReturnValue(store),
     listProfilesForProvider: vi.fn((s: typeof store, provider: string) => {
@@ -78,6 +80,8 @@ const mocks = vi.hoisted(() => {
       env: { shellEnv: { enabled: true } },
     }),
     loadProviderUsageSummary: vi.fn().mockResolvedValue(undefined),
+    loadModelCatalog: vi.fn().mockResolvedValue([]),
+    runEmbeddedPiAgent: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -87,9 +91,11 @@ vi.mock("../../agents/agent-paths.js", () => ({
 
 vi.mock("../../agents/agent-scope.js", () => ({
   resolveAgentDir: mocks.resolveAgentDir,
+  resolveAgentWorkspaceDir: mocks.resolveAgentWorkspaceDir,
   resolveAgentExplicitModelPrimary: mocks.resolveAgentExplicitModelPrimary,
   resolveAgentEffectiveModelPrimary: mocks.resolveAgentEffectiveModelPrimary,
   resolveAgentModelFallbacksOverride: mocks.resolveAgentModelFallbacksOverride,
+  resolveDefaultAgentId: mocks.resolveDefaultAgentId,
   listAgentIds: mocks.listAgentIds,
 }));
 
@@ -130,6 +136,14 @@ vi.mock("../../infra/provider-usage.js", async (importOriginal) => {
     loadProviderUsageSummary: mocks.loadProviderUsageSummary,
   };
 });
+
+vi.mock("../../agents/model-catalog.js", () => ({
+  loadModelCatalog: mocks.loadModelCatalog,
+}));
+
+vi.mock("../../agents/pi-embedded.js", () => ({
+  runEmbeddedPiAgent: mocks.runEmbeddedPiAgent,
+}));
 
 import { modelsStatusCommand } from "./list.status-command.js";
 
@@ -315,7 +329,39 @@ describe("modelsStatusCommand auth overview", () => {
           defaultSource: "agent",
           fallbacksSource: "agent",
         });
+        expect(mocks.resolveAuthStorePathForDisplay).toHaveBeenCalledWith(
+          "/tmp/openclaw-agent-custom",
+        );
       },
+    );
+  });
+
+  it("uses the requested agent id and directory for auth probes", async () => {
+    const localRuntime = createRuntime();
+
+    await withAgentScopeOverrides(
+      {
+        agentDir: "/tmp/openclaw-agent-custom",
+      },
+      async () => {
+        await modelsStatusCommand(
+          {
+            json: true,
+            probe: true,
+            probeProvider: "anthropic",
+            agent: "Jeremiah",
+          },
+          localRuntime as never,
+        );
+      },
+    );
+
+    expect(mocks.ensureAuthProfileStore).toHaveBeenCalledWith("/tmp/openclaw-agent-custom");
+    expect(mocks.runEmbeddedPiAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "jeremiah",
+        agentDir: "/tmp/openclaw-agent-custom",
+      }),
     );
   });
 

@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import path from "node:path";
 import type { OAuthCredentials } from "@mariozechner/pi-ai";
+import { resolveStateDir } from "../../config/paths.js";
 import { resolveOAuthPath } from "../../config/paths.js";
 import { withFileLock } from "../../infra/file-lock.js";
 import { loadJsonFile, saveJsonFile } from "../../infra/json-file.js";
@@ -14,6 +16,11 @@ type RejectedCredentialEntry = { key: string; reason: CredentialRejectReason };
 type LoadAuthProfileStoreOptions = {
   allowKeychainPrompt?: boolean;
   readOnly?: boolean;
+};
+type StoredOAuthCredential = Extract<AuthProfileCredential, { type: "oauth" }>;
+type MergeAuthProfileStoresResult = {
+  store: AuthProfileStore;
+  healedProfileIds: string[];
 };
 
 const AUTH_PROFILE_TYPES = new Set<AuthProfileCredential["type"]>(["api_key", "oauth", "token"]);
@@ -255,25 +262,281 @@ function mergeRecord<T>(
   return { ...base, ...override };
 }
 
-function mergeAuthProfileStores(
+function isStoredOAuthCredential(
+  credential: AuthProfileCredential | undefined,
+): credential is StoredOAuthCredential {
+  return credential?.type === "oauth";
+}
+
+function sameStoredOAuthCredential(
+  left: StoredOAuthCredential | undefined,
+  right: StoredOAuthCredential | undefined,
+): boolean {
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.provider === right.provider &&
+    left.access === right.access &&
+    left.refresh === right.refresh &&
+    left.expires === right.expires &&
+    left.email === right.email &&
+    left.enterpriseUrl === right.enterpriseUrl &&
+    left.projectId === right.projectId &&
+    left.accountId === right.accountId &&
+    left.clientId === right.clientId
+  );
+}
+
+function resolveOAuthCredentialCompleteness(credential: StoredOAuthCredential): number {
+  let score = 0;
+  if (typeof credential.access === "string" && credential.access.trim().length > 0) {
+    score += 1;
+  }
+  if (typeof credential.refresh === "string" && credential.refresh.trim().length > 0) {
+    score += 1;
+  }
+  if (typeof credential.accountId === "string" && credential.accountId.trim().length > 0) {
+    score += 1;
+  }
+  if (typeof credential.enterpriseUrl === "string" && credential.enterpriseUrl.trim().length > 0) {
+    score += 1;
+  }
+  if (typeof credential.projectId === "string" && credential.projectId.trim().length > 0) {
+    score += 1;
+  }
+  return score;
+}
+
+function resolveOAuthCredentialExpiry(credential: StoredOAuthCredential): number {
+  return typeof credential.expires === "number" && Number.isFinite(credential.expires)
+    ? credential.expires
+    : Number.NEGATIVE_INFINITY;
+}
+
+function compareStoredOAuthCredentialFreshness(
+  left: StoredOAuthCredential,
+  right: StoredOAuthCredential,
+): number {
+  const expiryDiff = resolveOAuthCredentialExpiry(left) - resolveOAuthCredentialExpiry(right);
+  if (expiryDiff !== 0) {
+    return expiryDiff;
+  }
+  const completenessDiff =
+    resolveOAuthCredentialCompleteness(left) - resolveOAuthCredentialCompleteness(right);
+  if (completenessDiff !== 0) {
+    return completenessDiff;
+  }
+  return 0;
+}
+
+function mergeAuthProfileStoresDetailed(
   base: AuthProfileStore,
   override: AuthProfileStore,
-): AuthProfileStore {
+): MergeAuthProfileStoresResult {
   if (
     Object.keys(override.profiles).length === 0 &&
     !override.order &&
     !override.lastGood &&
     !override.usageStats
   ) {
-    return base;
+    return {
+      store: base,
+      healedProfileIds: [],
+    };
   }
+
+  const profiles = { ...base.profiles };
+  const healedProfileIds: string[] = [];
+  for (const [profileId, overrideCredential] of Object.entries(override.profiles)) {
+    const baseCredential = profiles[profileId];
+    if (
+      isStoredOAuthCredential(baseCredential) &&
+      isStoredOAuthCredential(overrideCredential) &&
+      baseCredential.provider === overrideCredential.provider &&
+      compareStoredOAuthCredentialFreshness(baseCredential, overrideCredential) > 0
+    ) {
+      profiles[profileId] = baseCredential;
+      healedProfileIds.push(profileId);
+      continue;
+    }
+    profiles[profileId] = overrideCredential;
+  }
+
   return {
-    version: Math.max(base.version, override.version ?? base.version),
-    profiles: { ...base.profiles, ...override.profiles },
-    order: mergeRecord(base.order, override.order),
-    lastGood: mergeRecord(base.lastGood, override.lastGood),
-    usageStats: mergeRecord(base.usageStats, override.usageStats),
+    store: {
+      version: Math.max(base.version, override.version ?? base.version),
+      profiles,
+      order: mergeRecord(base.order, override.order),
+      lastGood: mergeRecord(base.lastGood, override.lastGood),
+      usageStats: mergeRecord(base.usageStats, override.usageStats),
+    },
+    healedProfileIds,
   };
+}
+
+function mergeAuthProfileStores(
+  base: AuthProfileStore,
+  override: AuthProfileStore,
+): AuthProfileStore {
+  return mergeAuthProfileStoresDetailed(base, override).store;
+}
+
+function loadPersistedAuthProfileStore(agentDir?: string): AuthProfileStore {
+  return (
+    loadCoercedStore(resolveAuthStorePath(agentDir)) ?? {
+      version: AUTH_STORE_VERSION,
+      profiles: {},
+    }
+  );
+}
+
+function collectUpdatedOAuthProfiles(params: {
+  before: Record<string, StoredOAuthCredential>;
+  after: AuthProfileStore;
+}): Array<{ profileId: string; credential: StoredOAuthCredential }> {
+  const updated: Array<{ profileId: string; credential: StoredOAuthCredential }> = [];
+  for (const [profileId, credential] of Object.entries(params.after.profiles)) {
+    if (!isStoredOAuthCredential(credential)) {
+      continue;
+    }
+    const previous = params.before[profileId];
+    if (sameStoredOAuthCredential(previous, credential)) {
+      continue;
+    }
+    updated.push({ profileId, credential: { ...credential } });
+  }
+  return updated;
+}
+
+function snapshotStoredOAuthProfiles(
+  store: AuthProfileStore,
+): Record<string, StoredOAuthCredential> {
+  const snapshot: Record<string, StoredOAuthCredential> = {};
+  for (const [profileId, credential] of Object.entries(store.profiles)) {
+    if (!isStoredOAuthCredential(credential)) {
+      continue;
+    }
+    snapshot[profileId] = { ...credential };
+  }
+  return snapshot;
+}
+
+function persistHealedOAuthProfiles(params: {
+  agentDir?: string;
+  profileIds: string[];
+  mergedStore: AuthProfileStore;
+}): void {
+  if (!params.agentDir || params.profileIds.length === 0) {
+    return;
+  }
+
+  const targetStore = loadPersistedAuthProfileStore(params.agentDir);
+  let mutated = false;
+  for (const profileId of params.profileIds) {
+    const mergedCredential = params.mergedStore.profiles[profileId];
+    if (!isStoredOAuthCredential(mergedCredential)) {
+      continue;
+    }
+    const existing =
+      targetStore.profiles[profileId]?.type === "oauth"
+        ? targetStore.profiles[profileId]
+        : undefined;
+    if (sameStoredOAuthCredential(existing, mergedCredential)) {
+      continue;
+    }
+    targetStore.profiles[profileId] = { ...mergedCredential };
+    targetStore.lastGood = { ...targetStore.lastGood, [mergedCredential.provider]: profileId };
+    mutated = true;
+  }
+
+  if (!mutated) {
+    return;
+  }
+
+  saveAuthProfileStore(targetStore, params.agentDir);
+  log.info("healed stale shared OAuth credentials from main agent", {
+    agentDir: params.agentDir,
+    profileIds: params.profileIds,
+  });
+}
+
+export function propagateOAuthProfilesToSiblingAgentStores(params: {
+  profiles: Array<{ profileId: string; credential: StoredOAuthCredential }>;
+  sourceAgentDir?: string;
+  source: string;
+}): void {
+  if (params.profiles.length === 0) {
+    return;
+  }
+
+  const agentsRoot = path.join(resolveStateDir(), "agents");
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(agentsRoot, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const sourceAgentDir = path.dirname(resolveAuthStorePath(params.sourceAgentDir));
+  const updatedAgentIds: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const targetAgentDir = path.join(agentsRoot, entry.name, "agent");
+    if (!fs.existsSync(targetAgentDir)) {
+      continue;
+    }
+    if (path.resolve(targetAgentDir) === path.resolve(sourceAgentDir)) {
+      continue;
+    }
+
+    const targetStore = loadPersistedAuthProfileStore(targetAgentDir);
+    let mutated = false;
+    for (const profile of params.profiles) {
+      const existing = targetStore.profiles[profile.profileId];
+      if (existing && !isStoredOAuthCredential(existing)) {
+        continue;
+      }
+      if (isStoredOAuthCredential(existing) && existing.provider !== profile.credential.provider) {
+        continue;
+      }
+      if (
+        isStoredOAuthCredential(existing) &&
+        sameStoredOAuthCredential(existing, profile.credential)
+      ) {
+        continue;
+      }
+      if (
+        isStoredOAuthCredential(existing) &&
+        compareStoredOAuthCredentialFreshness(profile.credential, existing) < 0
+      ) {
+        continue;
+      }
+      targetStore.profiles[profile.profileId] = { ...profile.credential };
+      targetStore.lastGood = {
+        ...targetStore.lastGood,
+        [profile.credential.provider]: profile.profileId,
+      };
+      mutated = true;
+    }
+    if (!mutated) {
+      continue;
+    }
+    saveAuthProfileStore(targetStore, targetAgentDir);
+    updatedAgentIds.push(entry.name);
+  }
+
+  if (updatedAgentIds.length === 0) {
+    return;
+  }
+
+  log.info("propagated shared OAuth credentials to sibling agent stores", {
+    source: params.source,
+    profileIds: params.profiles.map((profile) => profile.profileId),
+    targets: updatedAgentIds,
+  });
 }
 
 function mergeOAuthFileIntoStore(store: AuthProfileStore): boolean {
@@ -347,10 +610,18 @@ export function loadAuthProfileStore(): AuthProfileStore {
   const authPath = resolveAuthStorePath();
   const asStore = loadCoercedStore(authPath);
   if (asStore) {
+    const oauthBeforeSync = snapshotStoredOAuthProfiles(asStore);
     // Sync from external CLI tools on every load.
     const synced = syncExternalCliCredentials(asStore);
     if (synced) {
       saveJsonFile(authPath, asStore);
+      propagateOAuthProfilesToSiblingAgentStores({
+        profiles: collectUpdatedOAuthProfiles({
+          before: oauthBeforeSync,
+          after: asStore,
+        }),
+        source: "external_cli_sync",
+      });
     }
     return asStore;
   }
@@ -379,11 +650,20 @@ function loadAuthProfileStoreForAgent(
   const authPath = resolveAuthStorePath(agentDir);
   const asStore = loadCoercedStore(authPath);
   if (asStore) {
+    const oauthBeforeSync = snapshotStoredOAuthProfiles(asStore);
     // Runtime secret activation must remain read-only:
     // sync external CLI credentials in-memory, but never persist while readOnly.
     const synced = syncExternalCliCredentials(asStore);
     if (synced && !readOnly) {
       saveJsonFile(authPath, asStore);
+      propagateOAuthProfilesToSiblingAgentStores({
+        profiles: collectUpdatedOAuthProfiles({
+          before: oauthBeforeSync,
+          after: asStore,
+        }),
+        sourceAgentDir: agentDir,
+        source: "external_cli_sync",
+      });
     }
     return asStore;
   }
@@ -412,12 +692,23 @@ function loadAuthProfileStoreForAgent(
   }
 
   const mergedOAuth = mergeOAuthFileIntoStore(store);
+  const oauthBeforeSync = snapshotStoredOAuthProfiles(store);
   // Keep external CLI credentials visible in runtime even during read-only loads.
   const syncedCli = syncExternalCliCredentials(store);
   const forceReadOnly = process.env.OPENCLAW_AUTH_STORE_READONLY === "1";
   const shouldWrite = !readOnly && !forceReadOnly && (legacy !== null || mergedOAuth || syncedCli);
   if (shouldWrite) {
     saveJsonFile(authPath, store);
+    if (syncedCli) {
+      propagateOAuthProfilesToSiblingAgentStores({
+        profiles: collectUpdatedOAuthProfiles({
+          before: oauthBeforeSync,
+          after: store,
+        }),
+        sourceAgentDir: agentDir,
+        source: "external_cli_sync",
+      });
+    }
   }
 
   // PR #368: legacy auth.json could get re-migrated from other agent dirs,
@@ -476,9 +767,14 @@ export function ensureAuthProfileStore(
   }
 
   const mainStore = loadAuthProfileStoreForAgent(undefined, options);
-  const merged = mergeAuthProfileStores(mainStore, store);
+  const mergedResult = mergeAuthProfileStoresDetailed(mainStore, store);
+  persistHealedOAuthProfiles({
+    agentDir,
+    profileIds: mergedResult.healedProfileIds,
+    mergedStore: mergedResult.store,
+  });
 
-  return merged;
+  return mergedResult.store;
 }
 
 export function saveAuthProfileStore(store: AuthProfileStore, agentDir?: string): void {

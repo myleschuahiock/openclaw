@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import { resolveOpenClawAgentDir } from "../../agents/agent-paths.js";
-import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import {
   type AuthProfileCredential,
   type AuthProfileEligibilityReasonCode,
@@ -244,9 +243,10 @@ export async function buildProbeTargets(params: {
   providers: string[];
   modelCandidates: string[];
   options: AuthProbeOptions;
+  agentDir?: string;
 }): Promise<{ targets: AuthProbeTarget[]; results: AuthProbeResult[] }> {
   const { cfg, providers, modelCandidates, options } = params;
-  const store = ensureAuthProfileStore();
+  const store = ensureAuthProfileStore(params.agentDir);
   const providerFilter = options.provider?.trim();
   const providerFilterKey = providerFilter ? normalizeProviderId(providerFilter) : null;
   const profileFilter = new Set((options.profileIds ?? []).map((id) => id.trim()).filter(Boolean));
@@ -489,16 +489,15 @@ async function probeTarget(params: {
 async function runTargetsWithConcurrency(params: {
   cfg: OpenClawConfig;
   targets: AuthProbeTarget[];
+  agentId: string;
+  agentDir: string;
   timeoutMs: number;
   maxTokens: number;
   concurrency: number;
   onProgress?: (update: { completed: number; total: number; label?: string }) => void;
 }): Promise<AuthProbeResult[]> {
-  const { cfg, targets, timeoutMs, maxTokens, onProgress } = params;
+  const { cfg, targets, timeoutMs, maxTokens, onProgress, agentId, agentDir } = params;
   const concurrency = Math.max(1, Math.min(targets.length || 1, params.concurrency));
-
-  const agentId = resolveDefaultAgentId(cfg);
-  const agentDir = resolveOpenClawAgentDir();
   const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId) ?? resolveDefaultAgentWorkspaceDir();
   const sessionDir = resolveSessionTranscriptsDirForAgent(agentId);
 
@@ -546,6 +545,8 @@ export async function runAuthProbes(params: {
   cfg: OpenClawConfig;
   providers: string[];
   modelCandidates: string[];
+  agentId: string;
+  agentDir: string;
   options: AuthProbeOptions;
   onProgress?: (update: { completed: number; total: number; label?: string }) => void;
 }): Promise<AuthProbeSummary> {
@@ -555,6 +556,7 @@ export async function runAuthProbes(params: {
     providers: params.providers,
     modelCandidates: params.modelCandidates,
     options: params.options,
+    agentDir: params.agentDir,
   });
 
   const totalTargets = plan.targets.length;
@@ -564,6 +566,8 @@ export async function runAuthProbes(params: {
     ? await runTargetsWithConcurrency({
         cfg: params.cfg,
         targets: plan.targets,
+        agentId: params.agentId,
+        agentDir: params.agentDir,
         timeoutMs: params.options.timeoutMs,
         maxTokens: params.options.maxTokens,
         concurrency: params.options.concurrency,

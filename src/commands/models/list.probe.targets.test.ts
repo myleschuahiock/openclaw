@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 let mockStore: AuthProfileStore;
 let mockAllowedProfiles: string[];
 
+const ensureAuthProfileStoreMock = vi.fn(() => mockStore);
 const resolveAuthProfileOrderMock = vi.fn(() => mockAllowedProfiles);
 const resolveAuthProfileEligibilityMock = vi.fn(() => ({
   eligible: false,
@@ -24,7 +25,7 @@ vi.mock("../../agents/auth-profiles.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../agents/auth-profiles.js")>();
   return {
     ...actual,
-    ensureAuthProfileStore: () => mockStore,
+    ensureAuthProfileStore: ensureAuthProfileStoreMock,
     listProfilesForProvider: (_store: AuthProfileStore, provider: string) =>
       Object.entries(mockStore.profiles)
         .filter(
@@ -115,6 +116,7 @@ function expectLegacyMissingCredentialsError(
 
 describe("buildProbeTargets reason codes", () => {
   beforeEach(() => {
+    ensureAuthProfileStoreMock.mockClear();
     mockStore = {
       version: 1,
       profiles: {
@@ -216,5 +218,21 @@ describe("buildProbeTargets reason codes", () => {
         }),
       );
     });
+  });
+
+  it("loads auth profiles from the requested agent directory", async () => {
+    await buildProbeTargets({
+      cfg: {} as OpenClawConfig,
+      providers: ["anthropic"],
+      modelCandidates: ["anthropic/claude-sonnet-4-6"],
+      agentDir: "/tmp/trading-asst-agent",
+      options: {
+        timeoutMs: 5_000,
+        concurrency: 1,
+        maxTokens: 16,
+      },
+    });
+
+    expect(ensureAuthProfileStoreMock).toHaveBeenCalledWith("/tmp/trading-asst-agent");
   });
 });

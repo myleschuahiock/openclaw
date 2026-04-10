@@ -245,6 +245,8 @@ describe("CronService restart catch-up", () => {
     const jobs = await cron.list({ includeDisabled: true });
     const updated = jobs.find((job) => job.id === "restart-missed-slot");
     expect(updated?.state.lastRunAtMs).toBe(Date.parse("2025-12-13T04:02:00.000Z"));
+    expect(updated?.state.lastRunKind).toBe("scheduled");
+    expect(updated?.state.lastScheduledRunAtMs).toBe(Date.parse("2025-12-13T04:01:00.000Z"));
 
     cron.stop();
     await store.cleanup();
@@ -417,6 +419,10 @@ describe("CronService restart catch-up", () => {
       expect.objectContaining({ agentId: undefined }),
     );
     expect(requestHeartbeatNow).toHaveBeenCalled();
+
+    const jobs = await cron.list({ includeDisabled: true });
+    const updated = jobs.find((job) => job.id === "restart-backoff-elapsed-replay");
+    expect(updated?.state.lastScheduledRunAtMs).toBe(Date.parse("2025-12-13T04:01:00.000Z"));
 
     cron.stop();
     await store.cleanup();

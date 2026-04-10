@@ -28,6 +28,11 @@ const CronRunStatusSchema = Type.Union([
   Type.Literal("error"),
   Type.Literal("skipped"),
 ]);
+const CronRunKindSchema = Type.Union([
+  Type.Literal("scheduled"),
+  Type.Literal("catchup"),
+  Type.Literal("manual"),
+]);
 const CronSortDirSchema = Type.Union([Type.Literal("asc"), Type.Literal("desc")]);
 const CronJobsEnabledFilterSchema = Type.Union([
   Type.Literal("all"),
@@ -216,6 +221,8 @@ export const CronJobStateSchema = Type.Object(
     nextRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
     runningAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
     lastRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    lastRunKind: Type.Optional(CronRunKindSchema),
+    lastScheduledRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
     lastRunStatus: Type.Optional(CronRunStatusSchema),
     lastStatus: Type.Optional(CronRunStatusSchema),
     lastError: Type.Optional(Type.String()),
@@ -225,6 +232,9 @@ export const CronJobStateSchema = Type.Object(
     lastDeliveryStatus: Type.Optional(CronDeliveryStatusSchema),
     lastDeliveryError: Type.Optional(Type.String()),
     lastFailureAlertAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    pendingCatchupForRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    pendingCatchupNextRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    lastCatchupQueuedForRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
   },
   { additionalProperties: false },
 );
@@ -337,7 +347,10 @@ export const CronRunLogEntrySchema = Type.Object(
     deliveryError: Type.Optional(Type.String()),
     sessionId: Type.Optional(NonEmptyString),
     sessionKey: Type.Optional(NonEmptyString),
+    runKind: Type.Optional(CronRunKindSchema),
     runAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    scheduledRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    catchupForRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
     durationMs: Type.Optional(Type.Integer({ minimum: 0 })),
     nextRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
     model: Type.Optional(Type.String()),
