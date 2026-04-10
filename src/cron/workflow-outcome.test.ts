@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CronRunOutcome } from "./types.js";
 import { normalizeCronRunOutcome } from "./workflow-outcome.js";
@@ -102,6 +105,94 @@ describe("normalizeCronRunOutcome", () => {
     expect(result.workflowStatus).toBe("success");
     expect(result.workflowDelivered).toBe(true);
     expect(result.workflowDeliveryStatus).toBe("email_then_telegram");
+  });
+
+  it("uses run-manifest truth when the summary says email was attempted but not sent", () => {
+    const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cron-workflow-outcome-"));
+    const runFolder = path.join(runRoot, "daily-screener 2026-04-10");
+    fs.mkdirSync(runFolder, { recursive: true });
+    fs.writeFileSync(
+      path.join(runFolder, "run-manifest.json"),
+      JSON.stringify(
+        {
+          terminal_status: "degraded",
+          success: true,
+          failure_code: null,
+          failure_codes: [],
+          delivery: {
+            preflight: {
+              blocking_codes: ["MAIL_ACCOUNT_PROBE_TIMEOUT", "AUTH_REQUIRED"],
+              degraded_codes: ["MAIL_ACCOUNT_PROBE_TIMEOUT", "AUTH_REQUIRED"],
+            },
+            email: {
+              sent: false,
+              failure_codes: ["AUTH_REQUIRED", "MAIL_ACCOUNT_PROBE_TIMEOUT"],
+            },
+            telegram: {
+              sent: true,
+            },
+            delivery_state: "telegram_only_degraded",
+          },
+          delivery_verification: {
+            status: "degraded",
+            ok: true,
+            degraded_codes: ["MAIL_ACCOUNT_PROBE_TIMEOUT", "AUTH_REQUIRED"],
+            checks: {
+              email_sent: false,
+              telegram_sent: true,
+              email_failure_fallback: true,
+              telegram_primary_hash_present: true,
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    try {
+      const result = normalizeOutcome({
+        status: "ok" as const,
+        delivered: false,
+        summary: [
+          "Done — the run completed successfully (`exit code 0`).",
+          "",
+          `Run folder: ${runFolder}`,
+          "Email first attempted: yes",
+          "Email with attachments sent: no",
+          "Telegram fallback delivery only",
+        ].join("\n"),
+      });
+
+      expect(result.status).toBe("ok");
+      expect(result.workflowStatus).toBe("success");
+      expect(result.workflowFailureCode).toBe("MAIL_ACCOUNT_PROBE_TIMEOUT");
+      expect(result.workflowFailureCodes).toEqual(["MAIL_ACCOUNT_PROBE_TIMEOUT", "AUTH_REQUIRED"]);
+      expect(result.workflowDelivered).toBe(false);
+      expect(result.workflowDeliveryStatus).toBe("telegram_only_degraded");
+    } finally {
+      fs.rmSync(runRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the older summary fallback conservative when email was attempted but not sent", () => {
+    const result = normalizeOutcome({
+      status: "ok" as const,
+      delivered: false,
+      summary: [
+        "Done — the run completed successfully (`exit code 0`).",
+        "",
+        "Email first attempted: yes",
+        "Email with attachments sent: no",
+        "Telegram: sent",
+      ].join("\n"),
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.workflowStatus).toBe("success");
+    expect(result.workflowDelivered).toBe(false);
+    expect(result.workflowDeliveryStatus).toBe("email_failed_telegram_sent");
   });
 
   it("leaves successful summaries untouched", () => {
