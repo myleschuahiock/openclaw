@@ -376,6 +376,14 @@ importers:
 
   extensions/google: {}
 
+  extensions/gmail:
+    dependencies:
+      '@sinclair/typebox':
+        specifier: 0.34.48
+        version: 0.34.48
+
+  extensions/google-gemini-cli-auth: {}
+
   extensions/googlechat:
     dependencies:
       google-auth-library:

@@ -1,0 +1,20 @@
+{
+  "name": "@openclaw/gmail",
+  "version": "2026.3.9",
+  "private": true,
+  "description": "OpenClaw Gmail API sending plugin",
+  "type": "module",
+  "scripts": {
+    "oauth": "tsx scripts/generate-refresh-token.ts",
+    "smoke": "tsx scripts/smoke-send.ts",
+    "test": "pnpm -w exec vitest run --config vitest.extensions.config.ts extensions/gmail/src/attachments.test.ts extensions/gmail/src/client.test.ts extensions/gmail/src/mime.test.ts extensions/gmail/src/recipients.test.ts"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
