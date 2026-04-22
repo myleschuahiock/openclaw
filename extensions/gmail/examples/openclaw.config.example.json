@@ -1,0 +1,25 @@
+{
+  "plugins": {
+    "entries": {
+      "gmail": {
+        "enabled": true,
+        "config": {
+          "envFile": "extensions/gmail/.env",
+          "sender": "miaibarra.bh@gmail.com",
+          "enableDrafts": false,
+          "allowFromOverride": false
+        }
+      }
+    }
+  },
+  "agents": {
+    "list": [
+      {
+        "id": "main",
+        "tools": {
+          "allow": ["send_gmail"]
+        }
+      }
+    ]
+  }
+}

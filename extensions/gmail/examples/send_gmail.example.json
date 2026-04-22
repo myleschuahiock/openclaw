@@ -1,0 +1,11 @@
+{
+  "to": ["recipient@example.com"],
+  "cc": [],
+  "bcc": [],
+  "subject": "Weekly Report",
+  "text": "Attached is the weekly report.",
+  "html": "<p>Attached is the weekly report.</p>",
+  "attachments": ["/path/to/report.pdf"],
+  "reply_to": "miaibarra.bh@gmail.com",
+  "save_as_draft": false
+}
