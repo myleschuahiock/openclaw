@@ -1081,6 +1081,93 @@ export const GENERATED_BUNDLED_PLUGIN_METADATA = [
     },
   },
   {
+    dirName: "gmail",
+    idHint: "gmail",
+    source: {
+      source: "./index.ts",
+      built: "index.js",
+    },
+    packageName: "@openclaw/gmail",
+    packageVersion: "2026.3.9",
+    packageDescription: "OpenClaw Gmail API sending plugin",
+    packageManifest: {
+      extensions: ["./index.ts"],
+    },
+    manifest: {
+      id: "gmail",
+      configSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          envFile: {
+            type: "string",
+          },
+          sender: {
+            type: "string",
+          },
+          userId: {
+            type: "string",
+          },
+          enableDrafts: {
+            type: "boolean",
+          },
+          allowFromOverride: {
+            type: "boolean",
+          },
+          maxRawBytes: {
+            type: "number",
+            minimum: 1024,
+          },
+          maxAttachmentBytes: {
+            type: "number",
+            minimum: 1024,
+          },
+          maxRetries: {
+            type: "number",
+            minimum: 0,
+            maximum: 8,
+          },
+          retryBaseDelayMs: {
+            type: "number",
+            minimum: 50,
+          },
+        },
+      },
+      name: "Gmail",
+      description: "Send Gmail messages and create/send drafts through the Gmail API with OAuth2.",
+      uiHints: {
+        envFile: {
+          label: "Gmail .env file",
+          placeholder: "extensions/gmail/.env",
+          help: "Local secrets file containing Gmail OAuth credentials. Do not commit it.",
+        },
+        sender: {
+          label: "Sender",
+          placeholder: "miaibarra.bh@gmail.com",
+          help: "Default From address for outgoing Gmail messages.",
+        },
+        enableDrafts: {
+          label: "Enable drafts",
+          help: "Allow draft creation and draft sending. Requires gmail.compose scope.",
+        },
+        allowFromOverride: {
+          label: "Allow From override",
+          help: "Allow tool calls to set a From address different from the configured sender.",
+        },
+        maxRawBytes: {
+          label: "Maximum raw size",
+          placeholder: "36700160",
+          advanced: true,
+        },
+        maxRetries: {
+          label: "Maximum retries",
+          placeholder: "3",
+          advanced: true,
+        },
+      },
+    },
+  },
+  {
     dirName: "google",
     idHint: "google-plugin",
     source: {

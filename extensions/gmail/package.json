@@ -5,9 +5,10 @@
   "description": "OpenClaw Gmail API sending plugin",
   "type": "module",
   "scripts": {
+    "bridge": "tsx scripts/bridge.ts",
     "oauth": "tsx scripts/generate-refresh-token.ts",
     "smoke": "tsx scripts/smoke-send.ts",
-    "test": "pnpm -w exec vitest run --config vitest.extensions.config.ts extensions/gmail/src/attachments.test.ts extensions/gmail/src/client.test.ts extensions/gmail/src/mime.test.ts extensions/gmail/src/recipients.test.ts"
+    "test": "pnpm -w exec vitest run --config vitest.extensions.config.ts extensions/gmail/src/attachments.test.ts extensions/gmail/src/bridge-cli.test.ts extensions/gmail/src/client.test.ts extensions/gmail/src/mime.test.ts extensions/gmail/src/recipients.test.ts"
   },
   "dependencies": {
     "@sinclair/typebox": "0.34.48"

@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { sendGmail } from "../src/send.js";
+import { sendGmail } from "../index.js";
 
 type SmokeArgs = {
   envFile: string;

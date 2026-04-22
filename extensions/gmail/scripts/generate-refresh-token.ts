@@ -4,14 +4,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { parseDotEnv } from "../src/config.js";
 import {
   buildAuthorizationUrl,
   codeChallengeS256,
+  DEFAULT_GMAIL_SENDER,
   exchangeAuthorizationCode,
+  GMAIL_COMPOSE_SCOPE,
+  GMAIL_SEND_SCOPE,
   generateCodeVerifier,
-} from "../src/oauth.js";
-import { GMAIL_COMPOSE_SCOPE, GMAIL_SEND_SCOPE, DEFAULT_GMAIL_SENDER } from "../src/types.js";
+  parseDotEnv,
+} from "../index.js";
 
 type Args = {
   envFile: string;
