@@ -70,6 +70,13 @@ pnpm --filter @openclaw/gmail oauth -- --env .env --drafts --write-env .env
 ```
 
 The helper writes `GMAIL_OAUTH_REFRESH_TOKEN` directly to the target `.env` file and does not print it by default. Use `--print-token` only when you explicitly need to copy the token manually.
+It also writes `GMAIL_OAUTH_GRANTED_SCOPES` so capability checks stay deterministic if Google omits `scope` from a later refresh response.
+
+If automatic browser launch is blocked, print the URL and open it yourself:
+
+```bash
+pnpm --filter @openclaw/gmail oauth -- --env .env --write-env .env --no-open
+```
 
 9. Enable the plugin and allowlist the optional tool:
 
@@ -160,6 +167,7 @@ pnpm --filter @openclaw/gmail smoke -- \
 - Do not commit `.env`, access tokens, refresh tokens, or real client secrets.
 - Default scope is `https://www.googleapis.com/auth/gmail.send`.
 - Draft support requires `https://www.googleapis.com/auth/gmail.compose`.
+- Healthcheck and send paths validate whether the current token grants the required capability for direct send vs draft operations.
 - Rotate credentials by revoking the OAuth grant from the Google account security page, creating or rotating the OAuth client secret in Google Cloud, and rerunning the OAuth helper.
 - Logs include operation counts, byte sizes, and Gmail IDs only. They do not log tokens, secrets, message bodies, or attachment contents.
 

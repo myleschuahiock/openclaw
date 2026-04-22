@@ -1,13 +1,20 @@
 import { loadGmailRuntimeConfig } from "./config.js";
 import { refreshAccessToken } from "./oauth.js";
+import { capabilitySatisfied, formatGrantedScopes } from "./scopes.js";
 import { sendGmail } from "./send.js";
-import { errorToSendGmailResult, GmailIntegrationError, type GmailPluginConfig } from "./types.js";
+import {
+  errorToSendGmailResult,
+  type GmailCapability,
+  GmailIntegrationError,
+  type GmailPluginConfig,
+} from "./types.js";
 
 export type GmailBridgeMode = "send" | "healthcheck";
 
 export type GmailBridgeArgs = {
   mode: GmailBridgeMode;
   envFile?: string;
+  capability: GmailCapability;
 };
 
 export type GmailBridgeSuccess = {
@@ -15,7 +22,11 @@ export type GmailBridgeSuccess = {
   mode: GmailBridgeMode;
   sender?: string;
   scope?: string;
+  granted_scopes?: string[];
   expires_at?: string;
+  required_capability?: GmailCapability;
+  capability_satisfied?: boolean | null;
+  scope_source?: "token_response" | "configured_hint" | "unknown";
   result?: unknown;
 };
 
@@ -32,13 +43,13 @@ export type GmailBridgeOutput = GmailBridgeSuccess | GmailBridgeFailure;
 function usage(): string {
   return [
     "Usage:",
-    "  tsx extensions/gmail/scripts/bridge.ts --mode healthcheck --env extensions/gmail/.env",
+    "  tsx extensions/gmail/scripts/bridge.ts --mode healthcheck --capability send --env extensions/gmail/.env",
     "  tsx extensions/gmail/scripts/bridge.ts --mode send --env extensions/gmail/.env < payload.json",
   ].join("\n");
 }
 
 export function parseBridgeArgs(argv: string[]): GmailBridgeArgs {
-  const args: GmailBridgeArgs = { mode: "send" };
+  const args: GmailBridgeArgs = { mode: "send", capability: "send" };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => argv[++i] ?? "";
@@ -50,6 +61,12 @@ export function parseBridgeArgs(argv: string[]): GmailBridgeArgs {
       args.mode = mode;
     } else if (arg === "--env") {
       args.envFile = next();
+    } else if (arg === "--capability") {
+      const capability = next();
+      if (capability !== "send" && capability !== "drafts") {
+        throw new GmailIntegrationError("INVALID_ARGUMENT", "--capability must be send or drafts");
+      }
+      args.capability = capability;
     } else if (arg === "--help" || arg === "-h") {
       throw new GmailIntegrationError("HELP", usage());
     } else {
@@ -90,12 +107,26 @@ export async function executeBridgeRequest(
     try {
       const config = loadGmailRuntimeConfig(pluginConfig(args));
       const token = await refreshAccessToken(config);
+      const supported = capabilitySatisfied(args.capability, token.grantedScopes);
+      if (supported === false) {
+        return {
+          success: false,
+          mode: "healthcheck",
+          error_code: "SCOPE_INSUFFICIENT",
+          error_message: `Gmail OAuth token does not grant ${args.capability} capability. Granted scopes: ${formatGrantedScopes(token.grantedScopes)}`,
+          retryable: false,
+        };
+      }
       return {
         success: true,
         mode: "healthcheck",
         sender: config.sender,
         scope: token.scope,
+        granted_scopes: token.grantedScopes,
         expires_at: new Date(token.expiresAt).toISOString(),
+        required_capability: args.capability,
+        capability_satisfied: supported,
+        scope_source: token.scopeSource,
       };
     } catch (error) {
       const result = errorToSendGmailResult(error, "send");

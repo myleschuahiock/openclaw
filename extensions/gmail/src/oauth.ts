@@ -1,4 +1,14 @@
 import crypto from "node:crypto";
+import {
+  type FetchLike,
+  RETRYABLE_STATUSES,
+  coerceRetryableFetchError,
+  fetchWithTimeout,
+  jitter,
+  retryAfterMs,
+  sleep,
+} from "./http.js";
+import { resolveGrantedScopes, type GmailScopeSource } from "./scopes.js";
 import { GmailIntegrationError, type GmailRuntimeConfig } from "./types.js";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -18,12 +28,9 @@ export type OAuthTokenResult = {
   accessToken: string;
   expiresAt: number;
   scope?: string;
+  grantedScopes: string[];
+  scopeSource: GmailScopeSource;
 };
-
-export type FetchLike = (
-  input: string | URL,
-  init?: RequestInit,
-) => Promise<Pick<Response, "ok" | "status" | "headers" | "text">>;
 
 function requireOAuthConfig(config: GmailRuntimeConfig): {
   clientId: string;
@@ -56,7 +63,7 @@ async function parseTokenResponse(
     throw new GmailIntegrationError(
       "OAUTH_BAD_RESPONSE",
       `Google OAuth token endpoint returned non-JSON status ${response.status}`,
-      { status: response.status },
+      { status: response.status, retryable: RETRYABLE_STATUSES.has(response.status) },
     );
   }
 }
@@ -75,28 +82,76 @@ export async function refreshAccessToken(
     body.set("client_secret", oauth.clientSecret);
   }
 
-  const response = await fetchImpl(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  const token = await parseTokenResponse(response);
+  const attempts = config.maxRetries + 1;
+  let lastError: GmailIntegrationError | undefined;
 
-  if (!response.ok || !token.access_token) {
-    throw new GmailIntegrationError(
-      "OAUTH_REFRESH_FAILED",
-      token.error_description ||
-        token.error ||
-        `OAuth refresh failed with status ${response.status}`,
-      { status: response.status, retryable: response.status >= 500 },
-    );
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let response: Awaited<ReturnType<FetchLike>>;
+    try {
+      response = await fetchWithTimeout(
+        fetchImpl,
+        GOOGLE_TOKEN_URL,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+        },
+        config.httpTimeoutMs,
+      );
+    } catch (error) {
+      const classified =
+        coerceRetryableFetchError(error, {
+          timeoutCode: "OAUTH_TIMEOUT",
+          timeoutMessage: `Google OAuth token request timed out after ${config.httpTimeoutMs} ms`,
+          networkCode: "OAUTH_REQUEST_FAILED",
+          networkMessagePrefix: "Google OAuth token request failed",
+        }) ??
+        new GmailIntegrationError(
+          "OAUTH_REQUEST_FAILED",
+          error instanceof Error ? error.message : String(error),
+        );
+      if (!classified.retryable || attempt >= attempts - 1) {
+        throw classified;
+      }
+      lastError = classified;
+      await sleep(jitter(config.retryBaseDelayMs * 2 ** attempt));
+      continue;
+    }
+
+    const token = await parseTokenResponse(response);
+    if (!response.ok || !token.access_token) {
+      const refreshError = new GmailIntegrationError(
+        "OAUTH_REFRESH_FAILED",
+        token.error_description ||
+          token.error ||
+          `OAuth refresh failed with status ${response.status}`,
+        { status: response.status, retryable: RETRYABLE_STATUSES.has(response.status) },
+      );
+      if (!refreshError.retryable || attempt >= attempts - 1) {
+        throw refreshError;
+      }
+      lastError = refreshError;
+      await sleep(
+        retryAfterMs(response.headers.get("retry-after")) ??
+          jitter(config.retryBaseDelayMs * 2 ** attempt),
+      );
+      continue;
+    }
+
+    const scopeDetails = resolveGrantedScopes(token.scope, config.grantedScopesHint);
+    return {
+      accessToken: token.access_token,
+      expiresAt: Date.now() + Math.max(60, token.expires_in ?? 3600) * 1000,
+      scope: scopeDetails.scope,
+      grantedScopes: scopeDetails.grantedScopes,
+      scopeSource: scopeDetails.scopeSource,
+    };
   }
 
-  return {
-    accessToken: token.access_token,
-    expiresAt: Date.now() + Math.max(60, token.expires_in ?? 3600) * 1000,
-    scope: token.scope,
-  };
+  throw (
+    lastError ??
+    new GmailIntegrationError("OAUTH_REFRESH_FAILED", "OAuth refresh failed before completion")
+  );
 }
 
 export class GmailOAuthTokenProvider {
@@ -111,12 +166,17 @@ export class GmailOAuthTokenProvider {
     this.cached = undefined;
   }
 
-  async getAccessToken(): Promise<string> {
+  async getToken(): Promise<OAuthTokenResult> {
     if (this.cached && this.cached.expiresAt - Date.now() > 60_000) {
-      return this.cached.accessToken;
+      return this.cached;
     }
     this.cached = await refreshAccessToken(this.config, this.fetchImpl);
-    return this.cached.accessToken;
+    return this.cached;
+  }
+
+  async getAccessToken(): Promise<string> {
+    const token = await this.getToken();
+    return token.accessToken;
   }
 }
 

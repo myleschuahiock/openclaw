@@ -5,6 +5,7 @@ import { buildMimeMessage, encodeRawMessageForGmail } from "./mime.js";
 import { normalizeSendGmailInput } from "./recipients.js";
 import {
   errorToSendGmailResult,
+  type GmailCapability,
   GmailIntegrationError,
   type GmailPluginConfig,
   type GmailRuntimeConfig,
@@ -35,6 +36,10 @@ function assertRuntimeConfig(config: GmailRuntimeConfig): void {
   }
 }
 
+function requiredCapabilityForMode(mode: SendGmailResult["mode"]): GmailCapability {
+  return mode === "send" ? "send" : "drafts";
+}
+
 export async function sendGmailWithConfig(
   params: Record<string, unknown>,
   config: GmailRuntimeConfig,
@@ -45,6 +50,7 @@ export async function sendGmailWithConfig(
     assertRuntimeConfig(config);
     const input = normalizeSendGmailInput(params, config);
     const client = options.client ?? createGmailClient(config);
+    await client.assertCapability(requiredCapabilityForMode(input.mode));
 
     if (input.mode === "send_draft") {
       const sent = await client.sendDraft(input.draftId!);

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { parseGrantedScopes } from "./scopes.js";
 import {
   DEFAULT_GMAIL_SENDER,
   GMAIL_API_MAX_RAW_BYTES,
@@ -126,6 +127,11 @@ export function loadGmailRuntimeConfig(
       pluginConfig?.allowFromOverride ?? env.GMAIL_ALLOW_FROM_OVERRIDE,
       false,
     ),
+    grantedScopesHint: parseGrantedScopes(
+      Array.isArray(pluginConfig?.grantedScopesHint)
+        ? pluginConfig.grantedScopesHint
+        : env.GMAIL_OAUTH_GRANTED_SCOPES,
+    ),
     maxRawBytes: parseNumber(
       pluginConfig?.maxRawBytes ?? env.GMAIL_MAX_RAW_BYTES,
       GMAIL_API_MAX_RAW_BYTES,
@@ -141,6 +147,10 @@ export function loadGmailRuntimeConfig(
     retryBaseDelayMs: Math.max(
       50,
       Math.trunc(parseNumber(pluginConfig?.retryBaseDelayMs ?? env.GMAIL_RETRY_BASE_DELAY_MS, 500)),
+    ),
+    httpTimeoutMs: Math.max(
+      1000,
+      Math.trunc(parseNumber(pluginConfig?.httpTimeoutMs ?? env.GMAIL_HTTP_TIMEOUT_MS, 15_000)),
     ),
   };
 }

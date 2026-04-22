@@ -1,5 +1,16 @@
-import { type FetchLike, GmailOAuthTokenProvider } from "./oauth.js";
 import {
+  type FetchLike,
+  RETRYABLE_STATUSES,
+  coerceRetryableFetchError,
+  fetchWithTimeout,
+  jitter,
+  retryAfterMs,
+  sleep,
+} from "./http.js";
+import { GmailOAuthTokenProvider } from "./oauth.js";
+import { capabilitySatisfied, formatGrantedScopes, type GmailScopeSource } from "./scopes.js";
+import {
+  type GmailCapability,
   GmailIntegrationError,
   type GmailDraftResponse,
   type GmailMessageResponse,
@@ -14,31 +25,6 @@ type GmailErrorPayload = {
     errors?: Array<{ reason?: string; message?: string }>;
   };
 };
-
-const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function retryAfterMs(value: string | null): number | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) {
-    return Math.max(0, seconds * 1000);
-  }
-  const dateMs = Date.parse(value);
-  if (Number.isFinite(dateMs)) {
-    return Math.max(0, dateMs - Date.now());
-  }
-  return undefined;
-}
-
-function jitter(baseMs: number): number {
-  return Math.round(baseMs * (0.75 + Math.random() * 0.5));
-}
 
 async function readJsonError(
   response: Awaited<ReturnType<FetchLike>>,
@@ -73,6 +59,28 @@ export class GmailApiClient {
     this.tokenProvider = new GmailOAuthTokenProvider(config, fetchImpl);
   }
 
+  async assertCapability(capability: GmailCapability): Promise<{
+    capabilitySatisfied: boolean | null;
+    grantedScopes: string[];
+    scope?: string;
+    scopeSource: GmailScopeSource;
+  }> {
+    const token = await this.tokenProvider.getToken();
+    const supported = capabilitySatisfied(capability, token.grantedScopes);
+    if (supported === false) {
+      throw new GmailIntegrationError(
+        "SCOPE_INSUFFICIENT",
+        `Gmail OAuth token does not grant ${capability} capability. Granted scopes: ${formatGrantedScopes(token.grantedScopes)}`,
+      );
+    }
+    return {
+      capabilitySatisfied: supported,
+      grantedScopes: token.grantedScopes,
+      scope: token.scope,
+      scopeSource: token.scopeSource,
+    };
+  }
+
   private async requestJson<T>(
     path: string,
     body: unknown,
@@ -84,15 +92,41 @@ export class GmailApiClient {
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const accessToken = await this.tokenProvider.getAccessToken();
-      const response = await this.fetchImpl(url, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      });
+      let response: Awaited<ReturnType<FetchLike>>;
+      try {
+        response = await fetchWithTimeout(
+          this.fetchImpl,
+          url,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+          },
+          this.config.httpTimeoutMs,
+        );
+      } catch (error) {
+        const classified =
+          coerceRetryableFetchError(error, {
+            timeoutCode: "GMAIL_REQUEST_TIMEOUT",
+            timeoutMessage: `Gmail API request timed out after ${this.config.httpTimeoutMs} ms`,
+            networkCode: "GMAIL_REQUEST_FAILED",
+            networkMessagePrefix: "Gmail API request failed",
+          }) ??
+          new GmailIntegrationError(
+            "GMAIL_REQUEST_FAILED",
+            error instanceof Error ? error.message : String(error),
+          );
+        if (!classified.retryable || attempt >= attempts - 1) {
+          throw classified;
+        }
+        lastError = classified;
+        await sleep(jitter(this.config.retryBaseDelayMs * 2 ** attempt));
+        continue;
+      }
 
       if (response.ok) {
         return JSON.parse(await response.text()) as T;

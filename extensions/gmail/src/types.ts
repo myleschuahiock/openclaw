@@ -1,9 +1,12 @@
 export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 export const GMAIL_COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose";
+export const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
+export const MAIL_GOOGLE_SCOPE = "https://mail.google.com/";
 export const GMAIL_API_MAX_RAW_BYTES = 36_700_160;
 export const DEFAULT_GMAIL_SENDER = "miaibarra.bh@gmail.com";
 
 export type GmailMode = "send" | "create_draft" | "send_draft";
+export type GmailCapability = "send" | "drafts";
 
 export type GmailPluginConfig = {
   envFile?: string;
@@ -11,24 +14,33 @@ export type GmailPluginConfig = {
   userId?: string;
   enableDrafts?: boolean;
   allowFromOverride?: boolean;
+  grantedScopesHint?: string[];
   maxRawBytes?: number;
   maxAttachmentBytes?: number;
   maxRetries?: number;
   retryBaseDelayMs?: number;
+  httpTimeoutMs?: number;
 };
 
 export type GmailRuntimeConfig = Required<
   Pick<
     GmailPluginConfig,
-    "sender" | "userId" | "enableDrafts" | "allowFromOverride" | "maxRawBytes" | "maxRetries"
+    | "sender"
+    | "userId"
+    | "enableDrafts"
+    | "allowFromOverride"
+    | "maxRawBytes"
+    | "maxRetries"
+    | "retryBaseDelayMs"
+    | "httpTimeoutMs"
   >
 > & {
   clientId?: string;
   clientSecret?: string;
   refreshToken?: string;
   envFile?: string;
+  grantedScopesHint: string[];
   maxAttachmentBytes?: number;
-  retryBaseDelayMs: number;
 };
 
 export type SendGmailInput = {

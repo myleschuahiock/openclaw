@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   buildAuthorizationUrl,
   codeChallengeS256,
@@ -24,15 +25,17 @@ type Args = {
   loginHint: string;
   writeEnv?: string;
   printToken: boolean;
+  noOpen: boolean;
 };
 
-function parseArgs(argv: string[]): Args {
+export function parseArgs(argv: string[]): Args {
   const args: Args = {
     envFile: "extensions/gmail/.env",
     port: 33333,
     drafts: false,
     loginHint: DEFAULT_GMAIL_SENDER,
     printToken: false,
+    noOpen: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -54,6 +57,8 @@ function parseArgs(argv: string[]): Args {
       args.writeEnv = next() || args.envFile;
     } else if (arg === "--print-token") {
       args.printToken = true;
+    } else if (arg === "--no-open") {
+      args.noOpen = true;
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -78,6 +83,7 @@ Options:
   --client-secret VALUE  Override GMAIL_OAUTH_CLIENT_SECRET
   --login-hint EMAIL     Google account hint (default: ${DEFAULT_GMAIL_SENDER})
   --write-env PATH       Update PATH with the returned refresh token
+  --no-open              Print the auth URL without opening a browser automatically
   --print-token          Print the refresh token to stdout (off by default)
 `);
 }
@@ -119,7 +125,7 @@ function writeEnvValue(filePath: string, key: string, value: string): void {
   );
 }
 
-async function waitForCode(port: number, expectedState: string): Promise<string> {
+export async function waitForCode(port: number, expectedState: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       try {
@@ -155,8 +161,34 @@ async function waitForCode(port: number, expectedState: string): Promise<string>
         });
       }
     });
+    server.once("error", (error) => {
+      reject(
+        new Error(
+          `Failed to listen on http://127.0.0.1:${port}/oauth2callback: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    });
     server.listen(port, "127.0.0.1");
   });
+}
+
+export function buildAuthorizationStart(
+  args: Args,
+  clientId: string,
+): { authUrl: string; redirectUri: string; scopes: string[]; state: string; verifier: string } {
+  const redirectUri = `http://127.0.0.1:${args.port}/oauth2callback`;
+  const state = crypto.randomUUID();
+  const verifier = generateCodeVerifier();
+  const scopes = [args.drafts ? GMAIL_COMPOSE_SCOPE : GMAIL_SEND_SCOPE];
+  const authUrl = buildAuthorizationUrl({
+    clientId,
+    redirectUri,
+    scopes,
+    loginHint: args.loginHint,
+    state,
+    codeChallenge: codeChallengeS256(verifier),
+  });
+  return { authUrl, redirectUri, scopes, state, verifier };
 }
 
 async function main(): Promise<void> {
@@ -171,23 +203,15 @@ async function main(): Promise<void> {
     throw new Error("GMAIL_OAUTH_CLIENT_ID is required. Put it in .env or pass --client-id.");
   }
 
-  const redirectUri = `http://127.0.0.1:${args.port}/oauth2callback`;
-  const state = crypto.randomUUID();
-  const verifier = generateCodeVerifier();
-  const scopes = [args.drafts ? GMAIL_COMPOSE_SCOPE : GMAIL_SEND_SCOPE];
-  const authUrl = buildAuthorizationUrl({
-    clientId,
-    redirectUri,
-    scopes,
-    loginHint: args.loginHint,
-    state,
-    codeChallenge: codeChallengeS256(verifier),
-  });
+  const { authUrl, redirectUri, scopes, state, verifier } = buildAuthorizationStart(args, clientId);
 
-  console.log(`Opening Google OAuth consent for ${args.loginHint}`);
+  console.log(`${args.noOpen ? "Prepared" : "Opening"} Google OAuth consent for ${args.loginHint}`);
   console.log(`Redirect URI: ${redirectUri}`);
   console.log(`Requested scope: ${scopes[0]}`);
-  openBrowser(authUrl);
+  console.log(`Authorization URL: ${authUrl}`);
+  if (!args.noOpen) {
+    openBrowser(authUrl);
+  }
 
   const code = await waitForCode(args.port, state);
   const token = await exchangeAuthorizationCode({
@@ -209,6 +233,7 @@ async function main(): Promise<void> {
 
   if (args.writeEnv) {
     writeEnvValue(args.writeEnv, "GMAIL_OAUTH_REFRESH_TOKEN", token.refresh_token);
+    writeEnvValue(args.writeEnv, "GMAIL_OAUTH_GRANTED_SCOPES", token.scope ?? scopes.join(" "));
     writeEnvValue(args.writeEnv, "GMAIL_ENABLE_DRAFTS", args.drafts ? "true" : "false");
     console.log(`Updated ${path.resolve(args.writeEnv)}`);
   } else {
@@ -221,7 +246,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+const isEntrypoint =
+  typeof process.argv[1] === "string" && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isEntrypoint) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}

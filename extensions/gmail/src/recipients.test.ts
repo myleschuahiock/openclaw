@@ -5,11 +5,13 @@ import { GmailIntegrationError, type GmailRuntimeConfig } from "./types.js";
 const config: GmailRuntimeConfig = {
   sender: "miaibarra.bh@gmail.com",
   userId: "me",
+  grantedScopesHint: [],
   enableDrafts: true,
   allowFromOverride: false,
   maxRawBytes: 36_700_160,
   maxRetries: 0,
   retryBaseDelayMs: 500,
+  httpTimeoutMs: 100,
 };
 
 describe("gmail recipient normalization", () => {
